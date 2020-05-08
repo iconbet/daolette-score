@@ -1,0 +1,573 @@
+from iconservice import *
+
+TAG = 'ROUL'
+
+# Treasury minimum 2.5E+23, or 250,000 ICX.
+TREASURY_MINIMUM = 250000000000000000000000
+
+BET_LIMIT_RATIOS = [147, 2675, 4315, 2725, 1930, 1454, 1136, 908, 738, 606,
+                    500, 413, 341, 280, 227, 182, 142, 107, 76, 48, 23]
+BET_MIN = 100000000000000000  # 1.0E+17, .1 ICX
+U_SECONDS_DAY = 86400000000  # Microseconds in a day.
+
+TX_MIN_BATCH_SIZE = 10
+TX_MAX_BATCH_SIZE = 500
+DIST_DURATION_PARAM = 50  # Units of 1/Days
+
+BET_TYPES = ["none", "bet_on_numbers", "bet_on_color", "bet_on_even_odd", "bet_on_number", "number_factor"]
+WHEEL_ORDER = ["2", "20", "3", "17", "6", "16", "7", "13", "10", "12",
+               "11", "9", "14", "8", "15", "5", "18", "4", "19", "1", "0"]
+WHEEL_BLACK = "2,3,6,7,10,11,14,15,18,19"
+SET_BLACK = {'2', '3', '6', '7', '10', '11', '14', '15', '18', '19'}
+WHEEL_RED = "1,4,5,8,9,12,13,16,17,20"
+SET_RED = {'1', '4', '5', '8', '9', '12', '13', '16', '17', '20'}
+WHEEL_ODD = "1,3,5,7,9,11,13,15,17,19"
+SET_ODD = {'1', '3', '5', '7', '9', '11', '13', '15', '17', '19'}
+WHEEL_EVEN = "2,4,6,8,10,12,14,16,18,20"
+SET_EVEN = {'2', '4', '6', '8', '10', '12', '14', '16', '18', '20'}
+MULTIPLIERS = {"bet_on_color": 2, "bet_on_even_odd": 2, "bet_on_number": 20, "number_factor": 20.685}
+
+
+# An interface of TapToken to retrieve balances
+class TokenInterface(InterfaceScore):
+    @interface
+    def balanceOf(self, _owner: Address) -> int:
+        pass
+
+    @interface
+    def totalSupply(self) -> int:
+        pass
+
+
+# An interface of Rewards Distribution Score to accumulate daily wagers
+class RewardsInterface(InterfaceScore):
+    @interface
+    def accumulate_wagers(self, _player: str, _wager: int, _day_index: int) -> None:
+        pass
+
+    @interface
+    def set_sweep_address(self, _score: Address) -> None:
+        pass
+
+    @interface
+    def rewards_dist_complete(self) -> bool:
+        pass
+
+
+# An interface to the dividends score
+class DividendsInterface(InterfaceScore):
+    @interface
+    def dividends_dist_complete(self) -> bool:
+        pass
+
+
+# An interface to the redistribution score
+class RedistributionInterface(InterfaceScore):
+    @interface
+    def dividends_redist_complete(self) -> bool:
+        pass
+
+
+# An interface of Game Authorization Score to get list of authorized game scores
+class AuthInterface(InterfaceScore):
+    @interface
+    def get_game_status(self, _scoreAddress: Address) -> str:
+        pass
+
+    @interface
+    def accumulate_daily_wagers(self, game: Address, wager: int) -> None:
+        pass
+
+    @interface
+    def accumulate_daily_payouts(self, game: Address, payout: int) -> None:
+        pass
+
+
+class Roulette(IconScoreBase):
+    _EXCESS = "excess"
+    _TOTAL_DISTRIBUTED = "total_distributed"
+    _GAME_ON = "game_on"
+    _BET_TYPE = "bet_type"
+    _TREASURY_MIN = "treasury_min"
+    _BET_LIMITS = "bet_limits"
+    _DAY = "day"
+    _SKIPPED_DAYS = "skipped_days"
+    _DAILY_BET_COUNT = "daily_bet_count"
+    _TOTAL_BET_COUNT = "total_bet_count"
+    _YESTERDAYS_BET_COUNT = "yesterdays_bet_count"
+    _TOKEN_SCORE = "token_score"
+    _REWARDS_SCORE = "rewards_score"
+    _DIVIDENDS_SCORE = "dividends_score"
+    _REDISTRIBUTION_SCORE = "redistribution_score"
+    _VOTE = "vote"
+    _VOTED = "voted"
+    _YES_VOTES = "yes_votes"
+    _NO_VOTES = "no_votes"
+    _OPEN_TREASURY = "open_treasury"
+    _GAME_AUTH_SCORE = "game_auth_score"
+
+    @eventlog(indexed=2)
+    def FundTransfer(self, recipient: Address, amount: int, note: str):
+        pass
+
+    @eventlog(indexed=2)
+    def BetSource(self, _from: Address, timestamp: int):
+        pass
+
+    @eventlog(indexed=2)
+    def BetPlaced(self, amount: int, numbers: str):
+        pass
+
+    @eventlog(indexed=2)
+    def BetResult(self, spin: str, winningNumber: str, payout: int):
+        pass
+
+    @eventlog(indexed=3)
+    def DayAdvance(self, day: int, skipped: int, block_time: int, note: str):
+        pass
+
+    def __init__(self, db: IconScoreDatabase) -> None:
+        super().__init__(db)
+        Logger.debug(f'In __init__.', TAG)
+        Logger.debug(f'owner is {self.owner}.', TAG)
+        self._excess = VarDB(self._EXCESS, db, value_type=int)
+        self._total_distributed = VarDB(self._TOTAL_DISTRIBUTED, db, value_type=int)
+        self._game_on = VarDB(self._GAME_ON, db, value_type=bool)
+        self._bet_type = VarDB(self._BET_TYPE, db, value_type=str)
+        self._treasury_min = VarDB(self._TREASURY_MIN, db, value_type=int)
+        self._bet_limits = DictDB(self._BET_LIMITS, db, value_type=int)
+        self._day = VarDB(self._DAY, db, value_type=int)
+        self._skipped_days = VarDB(self._SKIPPED_DAYS, db, value_type=int)
+        self._total_bet_count = VarDB(self._TOTAL_BET_COUNT, db, value_type=int)
+        self._daily_bet_count = VarDB(self._DAILY_BET_COUNT, db, value_type=int)
+        self._yesterdays_bet_count = VarDB(self._YESTERDAYS_BET_COUNT, db, value_type=int)
+        self._token_score = VarDB(self._TOKEN_SCORE, db, value_type=Address)
+        self._rewards_score = VarDB(self._REWARDS_SCORE, db, value_type=Address)
+        self._dividends_score = VarDB(self._DIVIDENDS_SCORE, db, value_type=Address)
+        self._redistribution_score = VarDB(self._REDISTRIBUTION_SCORE, db, value_type=Address)
+        self._vote = DictDB(self._VOTE, db, value_type=str)
+        self._voted = ArrayDB(self._VOTED, db, value_type=Address)
+        self._yes_votes = VarDB(self._YES_VOTES, db, value_type=int)
+        self._no_votes = VarDB(self._NO_VOTES, db, value_type=int)
+        self._open_treasury = VarDB(self._OPEN_TREASURY, db, value_type=bool)
+        self._game_auth_score = VarDB(self._GAME_AUTH_SCORE, db, value_type=Address)
+
+    def on_install(self) -> None:
+        super().on_install()
+        self._excess.set(0)
+        self._total_distributed.set(0)
+        self._game_on.set(False)
+        self._bet_type.set(BET_TYPES[0])
+        self._treasury_min.set(TREASURY_MINIMUM)
+        self._set_bet_limit()
+        self._day.set(self.now() // U_SECONDS_DAY)
+        self._skipped_days.set(0)
+        self._total_bet_count.set(0)
+        self._daily_bet_count.set(0)
+        self._yesterdays_bet_count.set(0)
+        self._yes_votes.set(0)
+        self._no_votes.set(0)
+        self._open_treasury.set(False)
+        self._game_auth_score.set(0)
+
+    def on_update(self) -> None:
+        super().on_update()
+
+    @external(readonly=True)
+    def get_score_owner(self) -> Address:
+        """
+        A function to return the owner of this score.
+        :return: Owner address of this score
+        :rtype: :class:`iconservice.base.address.Address`
+        """
+        return self.owner
+
+    @external
+    def set_token_score(self, _score: Address) -> None:
+        if self.msg.sender == self.owner:
+            self._token_score.set(_score)
+
+    @external
+    def set_rewards_score(self, _score: Address) -> None:
+        if self.msg.sender == self.owner:
+            self._rewards_score.set(_score)
+
+    @external
+    def set_dividends_score(self, _score: Address) -> None:
+        if self.msg.sender == self.owner:
+            self._dividends_score.set(_score)
+
+    @external
+    def set_redistribution_score(self, _score: Address) -> None:
+        if self.msg.sender == self.owner:
+            self._redistribution_score.set(_score)
+
+    @external
+    def set_game_auth_score(self, _score: Address) -> None:
+        if self.msg.sender == self.owner:
+            self._game_auth_score.set(_score)
+
+    @external
+    @payable
+    def set_treasury(self) -> None:
+        if self.msg.sender != self.owner and not self._open_treasury.get():
+            revert('Only the owner can set the treasury if it is not open.')
+        if self._open_treasury.get():
+            self._treasury_min.set(self._treasury_min.get() + self.msg.value)
+            Logger.debug(f'Increasing treasury minimum by {self.msg.value} to '
+                         f'{self._treasury_min.get()}.')
+            self._set_bet_limit()
+            self._excess.set(0)
+        Logger.debug(f'{self.msg.value} was added to the treasury from address {self.msg.sender}', TAG)
+
+    def _set_bet_limit(self) -> None:
+        for i, ratio in enumerate(BET_LIMIT_RATIOS):
+            self._bet_limits[i] = self._treasury_min.get() // ratio
+
+    @external
+    def game_on(self) -> None:
+        if self.msg.sender != self.owner:
+            revert(f'Only the game owner can turn it on.')
+        if not self._game_on.get():
+            self._game_on.set(True)
+            self._day.set(self.now() // U_SECONDS_DAY)
+
+    @external(readonly=True)
+    def get_multipliers(self) -> str:
+        return str(MULTIPLIERS)
+
+    @external(readonly=True)
+    def get_excess(self) -> int:
+        return self._excess.get()
+
+    @external(readonly=True)
+    def get_total_distributed(self) -> int:
+        return self._total_distributed.get()
+
+    @external(readonly=True)
+    def get_total_bets(self) -> int:
+        return self._total_bet_count.get() + self._daily_bet_count.get()
+
+    @external(readonly=True)
+    def get_todays_bet_total(self) -> int:
+        return self._daily_bet_count.get()
+
+    @external(readonly=True)
+    def get_game_on_status(self) -> bool:
+        return self._game_on.get()
+
+    @external
+    @payable
+    def take_wager(self, _amount: int) -> None:
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
+            revert(f'Bet only accepted through approved games.')
+        auth_score.accumulate_daily_wagers(self.msg.sender, _amount)
+
+        if self.__day_advanced():
+            self.__check_for_dividends()
+        self._daily_bet_count.set(self._daily_bet_count.get() + 1)
+        Logger.debug(f'Sending external wager data to rewards score.', TAG)
+        rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
+        rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
+
+    @external
+    def wager_payout(self, _payout: int) -> None:
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
+            revert(f'Payouts can only be invoked by approved games.')
+
+        auth_score.accumulate_daily_payouts(self.msg.sender, _payout)
+        try:
+            Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
+            self.icx.transfer(self.tx.origin, _payout)
+            self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
+            Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
+        except BaseException as e:
+            Logger.debug(f'Send failed. Exception: {e}', TAG)
+            revert('Network problem. Winnings not sent. Returning funds. '
+                   f'Exception: {e}')
+        self._excess.set(self.icx.get_balance(self.address) - self._treasury_min.get())
+
+    @external
+    @payable
+    def bet_on_numbers(self, numbers: str, user_seed: str = '') -> None:
+        """Takes a list of numbers in the form of a comma separated string."""
+        numset = set(numbers.split(','))
+        if numset == SET_RED or numset == SET_BLACK:
+            self._bet_type.set(BET_TYPES[2])
+        elif numset == SET_ODD or numset == SET_EVEN:
+            self._bet_type.set(BET_TYPES[3])
+        else:
+            self._bet_type.set(BET_TYPES[1])
+        self.__bet(numbers, user_seed)
+
+    @external
+    @payable
+    def bet_on_color(self, color: bool, user_seed: str = '') -> None:
+        self._bet_type.set(BET_TYPES[2])
+        if color:
+            numbers = WHEEL_RED
+        else:
+            numbers = WHEEL_BLACK
+        self.__bet(numbers, user_seed)
+
+    @external
+    @payable
+    def bet_on_even_odd(self, even_odd: bool, user_seed: str = '') -> None:
+        self._bet_type.set(BET_TYPES[3])
+        if even_odd:
+            numbers = WHEEL_ODD
+        else:
+            numbers = WHEEL_EVEN
+        self.__bet(numbers, user_seed)
+
+    @external
+    def untether(self) -> None:
+        """
+        A function to redefine the value of self.owner once it is possible.
+        To be included through an update if it is added to IconService.
+
+        Sets the value of self.owner to the score holding the game treasury.
+        """
+        if self.msg.sender != self.owner:
+            revert(f'Only the owner can call the untether method.')
+        pass
+
+    @external(readonly=True)
+    def get_treasury_min(self) -> int:
+        return self._treasury_min.get()
+
+    @external(readonly=True)
+    def get_bet_limit(self, n: int) -> int:
+        return self._bet_limits[n]
+
+    @external(readonly=True)
+    def get_vote_results(self) -> str:
+        results = [self._yes_votes.get(), self._no_votes.get()]
+        return str(results)
+
+    @external
+    def vote(self, option: str) -> None:
+        if option not in ['yes', 'no']:
+            revert(f'Option must be one of either "yes" or "no".')
+        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
+        address = self.tx.origin
+        if address not in self._voted and token_score.balanceOf(address) == 0:
+            revert(f'You must either own or be a previous owner of TAP tokens in order to cast a vote.')
+        self._vote[str(address)] = option
+        if address not in self._voted:
+            self._voted.put(address)
+            message = "Recorded vote of "
+        else:
+            message = "Updated vote to "
+        if not self._vote_result():
+            vote_msg = "Vote remains a 'No'."
+        else:
+            div_score = self._dividends_score.get()
+            div_score_str = str(div_score)
+            treasury_balance = self.icx.get_balance(self.address)
+            try:
+                Logger.debug(f'Trying to send to ({div_score_str}): {treasury_balance}.', TAG)
+                self.icx.transfer(div_score, treasury_balance)
+                self.FundTransfer(div_score, treasury_balance, "Treasury Liquidation")
+                Logger.debug(f'Sent div score ({div_score_str}) {treasury_balance}.', TAG)
+            except BaseException as e:
+                Logger.debug(f'Send failed. Exception: {e}', TAG)
+                payoutError = f'Exception: {e}'
+                revert('Network problem. Treasury not sent. '
+                       f'Exception: {e}')
+            vote_msg = "Vote passed! Treasury balance forwarded to distribution contract."
+            rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
+            rewards_score.set_sweep_address(div_score)
+            self._treasury_min.set(0)
+
+    def _vote_result(self) -> bool:
+        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
+        yes = 0
+        no = 0
+        for address in self._voted:
+            vote = self._vote[str(address)]
+            if vote == 'yes':
+                yes += token_score.balanceOf(address)
+            else:
+                no += token_score.balanceOf(address)
+        self._yes_votes.set(yes)
+        self._no_votes.set(no)
+        if self._yes_votes.get() > (token_score.totalSupply()
+                                    - token_score.balanceOf(self._rewards_score.get())) // 2:
+            return True
+        else:
+            return False
+
+    @external(readonly = True)
+    def get_batch_size(self, recip_count: int) -> int:
+        Logger.debug(f'In get_batch_size.', TAG)
+        yesterdays_count = self._yesterdays_bet_count.get()
+        if yesterdays_count < 1:
+            yesterdays_count = 1
+        size = (DIST_DURATION_PARAM * recip_count // yesterdays_count)
+        if size < TX_MIN_BATCH_SIZE:
+            size = TX_MIN_BATCH_SIZE
+        if size > TX_MAX_BATCH_SIZE:
+            size = TX_MAX_BATCH_SIZE
+        Logger.debug(f'Returning batch size of {size}', TAG)
+        return size
+
+    def get_random(self, user_seed: str = '') -> float:
+        """
+        Generates a random # from tx hash, block timestamp and user provided
+        seed. The block timestamp provides the source of unpredictability.
+
+        :param user_seed: string, 'Lucky phrase' provided by user.
+
+        :return: float,  number from [x / 100000.0 for x in range(100000)]
+        """
+        Logger.debug(f'Entered get_random.', TAG)
+        seed = (str(bytes.hex(self.tx.hash)) + str(self.now()) + user_seed)
+        spin = (int.from_bytes(sha3_256(seed.encode()), "big") % 100000) / 100000.0
+        Logger.debug(f'Result of the spin was {spin}.', TAG)
+        return spin
+
+    def __day_advanced(self) -> bool:
+        Logger.debug(f'In __day_advanced method.', TAG)
+        currentDay = self.now() // U_SECONDS_DAY
+        advance = currentDay - self._day.get()
+        if advance < 1:
+            return False
+        else:
+            rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
+            rewards_complete = rewards_score.rewards_dist_complete()
+            dividends_score = self.create_interface_score(self._dividends_score.get(), DividendsInterface)
+            dividends_complete = dividends_score.dividends_dist_complete()
+            if self._redistribution_score.get() != None:
+                redistribution_score = self.create_interface_score(self._redistribution_score.get(),
+                                                                   RedistributionInterface)
+                redist_complete = redistribution_score.dividends_redist_complete()
+            else:
+                redist_complete = True
+            if not rewards_complete or not dividends_complete or not redist_complete:
+                rew = ""
+                div = ""
+                redist = ""
+                if not rewards_complete:
+                    rew = " Rewards dist is not complete"
+                if not dividends_complete:
+                    div = " Dividends dist is not complete"
+                if not redist_complete:
+                    redist = " Divs Redistribution dist is not complete"
+                self._day.set(currentDay)
+                self._skipped_days.set(self._skipped_days.get() + advance)
+                self.DayAdvance(self._day.get(), self._skipped_days.get(), self.now(),
+                                f'Skipping a day since{rew}{div}{redist}.')
+                return False
+            if advance > 1:
+                self._skipped_days.set(self._skipped_days.get() + advance - 1)
+            self._day.set(currentDay)
+            self._total_bet_count.set(self._total_bet_count.get() + self._daily_bet_count.get())
+            self._yesterdays_bet_count.set(self._daily_bet_count.get())
+            self._daily_bet_count.set(0)
+            self.DayAdvance(self._day.get(), self._skipped_days.get(), self.now(), "Day advanced. Counts reset.")
+            return True
+
+    def __check_for_dividends(self):
+        """If there is excess in the treasury, transfer to the distribution contract."""
+        excess = self._excess.get()
+        Logger.debug(f'Found treasury excess of {excess}.', TAG)
+        if excess > 0:
+            try:
+                Logger.debug(f'Trying to send to ({self._dividends_score.get()}): {excess}.', TAG)
+                self.icx.transfer(self._dividends_score.get(), excess)
+                self.FundTransfer(self._dividends_score.get(), excess, "Game Dividend")
+                Logger.debug(f'Sent div score ({self._dividends_score.get()}) {excess}.', TAG)
+                self._total_distributed.set(self._total_distributed.get() + excess)
+            except BaseException as e:
+                Logger.debug(f'Send failed. Exception: {e}', TAG)
+                revert('Network problem. Excess not sent. '
+                       f'Exception: {e}')
+
+    def __bet(self, numbers: str, user_seed: str) -> None:
+        """Takes a list of numbers in the form of a comma separated string."""
+        self.BetSource(self.tx.origin, self.tx.timestamp)
+        if not self._game_on.get():
+            Logger.debug(f'Game not active yet.', TAG)
+            revert(f'Game not active yet.')
+        if self.__day_advanced():
+            self.__check_for_dividends()
+        self._daily_bet_count.set(self._daily_bet_count.get() + 1)
+
+        amount = self.msg.value
+        Logger.debug(f'Betting {amount} loop on {numbers}.', TAG)
+        self.BetPlaced(amount, numbers)
+
+        nums = set(numbers.split(','))
+        n = len(nums)
+        if n == 0:
+            Logger.debug(f'Bet placed without numbers.', TAG)
+            revert(f' Invalid bet. No numbers submitted. Zero win chance. Returning funds.')
+        elif n > 20:
+            Logger.debug(f'Bet placed with too many numbers. Max numbers = 20.', TAG)
+            revert(f' Invalid bet. Too many numbers submitted. Returning funds.')
+
+        numset = set(WHEEL_ORDER)
+        numset.remove('0')
+        for num in nums:
+            if num not in numset:
+                Logger.debug(f'Invalid number submitted.', TAG)
+                revert(
+                    f' Please check your bet. Numbers must be between 0 and 20, submitted as a comma separated string. Returning funds.')
+
+        bet_type = self._bet_type.get()
+        self._bet_type.set(BET_TYPES[0])
+        if bet_type == BET_TYPES[2] or bet_type == BET_TYPES[3]:
+            bet_limit = self._bet_limits[0]
+        else:
+            bet_limit = self._bet_limits[n]
+        if amount < BET_MIN or amount > bet_limit:
+            Logger.debug(f'Betting amount {amount} out of range.', TAG)
+            revert(f'Betting amount {amount} out of range ({BET_MIN} -> {bet_limit} loop).')
+
+        if n == 1:
+            bet_type = BET_TYPES[4]
+        if bet_type == BET_TYPES[1]:
+            payout = int(MULTIPLIERS[BET_TYPES[5]] * 1000) * amount // (1000 * n)
+        else:
+            payout = MULTIPLIERS[bet_type] * amount
+        if self.icx.get_balance(self.address) < payout:
+            Logger.debug(f'Not enough in treasury to make the play.', TAG)
+            revert('Not enough in treasury to make the play.')
+
+        spin = self.get_random(user_seed)
+        winningNumber = WHEEL_ORDER[int(spin * 21)]
+        Logger.debug(f'winningNumber was {winningNumber}.', TAG)
+        win = winningNumber in nums
+        payout = payout * win
+        self.BetResult(str(spin), winningNumber, payout)
+
+        if win == 1:
+            Logger.debug(f'Amount owed to winner: {payout}', TAG)
+            try:
+                Logger.debug(f'Trying to send to ({self.tx.origin}): {payout}.', TAG)
+                self.icx.transfer(self.tx.origin, payout)
+                self.FundTransfer(self.tx.origin, payout, "Player Winnings")
+                Logger.debug(f'Sent winner ({self.tx.origin}) {payout}.', TAG)
+            except BaseException as e:
+                Logger.debug(f'Send failed. Exception: {e}', TAG)
+                revert('Network problem. Winnings not sent. Returning funds.')
+        else:
+            Logger.debug(f'Player lost. ICX retained in treasury.', TAG)
+
+        self._excess.set(self.icx.get_balance(self.address) - self._treasury_min.get())
+
+        Logger.debug(f'Sending wager data to rewards score.', TAG)
+        rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
+        rewards_score.accumulate_wagers(str(self.tx.origin), self.msg.value,
+                                        (self._day.get() - self._skipped_days.get()) % 2)
+
+    @payable
+    def fallback(self):
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+
+        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
+            revert(
+                f'This score only accepts ICX through approved games or from the score owner through the set_treasury method.')
