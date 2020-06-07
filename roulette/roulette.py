@@ -8,7 +8,7 @@ TREASURY_MINIMUM = 250000000000000000000000
 BET_LIMIT_RATIOS = [147, 2675, 4315, 2725, 1930, 1454, 1136, 908, 738, 606,
                     500, 413, 341, 280, 227, 182, 142, 107, 76, 48, 23]
 BET_MIN = 100000000000000000  # 1.0E+17, .1 ICX
-U_SECONDS_DAY = 86400000000  # Microseconds in a day.
+U_SECONDS_DAY = 86400000000 # Microseconds in a day.
 
 TX_MIN_BATCH_SIZE = 10
 TX_MAX_BATCH_SIZE = 500
@@ -46,10 +46,6 @@ class RewardsInterface(InterfaceScore):
         pass
 
     @interface
-    def set_sweep_address(self, _score: Address) -> None:
-        pass
-
-    @interface
     def rewards_dist_complete(self) -> bool:
         pass
 
@@ -58,13 +54,6 @@ class RewardsInterface(InterfaceScore):
 class DividendsInterface(InterfaceScore):
     @interface
     def dividends_dist_complete(self) -> bool:
-        pass
-
-
-# An interface to the redistribution score
-class RedistributionInterface(InterfaceScore):
-    @interface
-    def dividends_redist_complete(self) -> bool:
         pass
 
 
@@ -82,11 +71,22 @@ class AuthInterface(InterfaceScore):
     def accumulate_daily_payouts(self, game: Address, payout: int) -> None:
         pass
 
+    @interface
+    def get_excess(self) -> int:
+        pass
+
+    @interface
+    def record_excess(self) -> int:
+        pass
+
 
 class Roulette(IconScoreBase):
-    _EXCESS = "excess"
+    _EXCESS = "house_excess"
+    _EXCESS_TO_DISTRIBUTE = "excess_to_distribute"
+
     _TOTAL_DISTRIBUTED = "total_distributed"
     _GAME_ON = "game_on"
+
     _BET_TYPE = "bet_type"
     _TREASURY_MIN = "treasury_min"
     _BET_LIMITS = "bet_limits"
@@ -98,7 +98,7 @@ class Roulette(IconScoreBase):
     _TOKEN_SCORE = "token_score"
     _REWARDS_SCORE = "rewards_score"
     _DIVIDENDS_SCORE = "dividends_score"
-    _REDISTRIBUTION_SCORE = "redistribution_score"
+
     _VOTE = "vote"
     _VOTED = "voted"
     _YES_VOTES = "yes_votes"
@@ -106,8 +106,15 @@ class Roulette(IconScoreBase):
     _OPEN_TREASURY = "open_treasury"
     _GAME_AUTH_SCORE = "game_auth_score"
 
+    _NEW_DIV_LIVE = "new_div_live"
+    _TREASURY_BALANCE = "treasury_balance"
+
     @eventlog(indexed=2)
     def FundTransfer(self, recipient: Address, amount: int, note: str):
+        pass
+
+    @eventlog(indexed=2)
+    def FundReceived(self, sender: Address, amount: int, note: str):
         pass
 
     @eventlog(indexed=2)
@@ -124,6 +131,10 @@ class Roulette(IconScoreBase):
 
     @eventlog(indexed=3)
     def DayAdvance(self, day: int, skipped: int, block_time: int, note: str):
+        pass
+
+    @eventlog(indexed=2)
+    def Vote(self, _from: Address, _vote: str, note: str):
         pass
 
     def __init__(self, db: IconScoreDatabase) -> None:
@@ -144,13 +155,17 @@ class Roulette(IconScoreBase):
         self._token_score = VarDB(self._TOKEN_SCORE, db, value_type=Address)
         self._rewards_score = VarDB(self._REWARDS_SCORE, db, value_type=Address)
         self._dividends_score = VarDB(self._DIVIDENDS_SCORE, db, value_type=Address)
-        self._redistribution_score = VarDB(self._REDISTRIBUTION_SCORE, db, value_type=Address)
+
         self._vote = DictDB(self._VOTE, db, value_type=str)
         self._voted = ArrayDB(self._VOTED, db, value_type=Address)
         self._yes_votes = VarDB(self._YES_VOTES, db, value_type=int)
         self._no_votes = VarDB(self._NO_VOTES, db, value_type=int)
         self._open_treasury = VarDB(self._OPEN_TREASURY, db, value_type=bool)
         self._game_auth_score = VarDB(self._GAME_AUTH_SCORE, db, value_type=Address)
+
+        self._new_div_live = VarDB(self._NEW_DIV_LIVE, db, value_type=bool)
+        self._excess_to_distribute = VarDB(self._EXCESS_TO_DISTRIBUTE, db, value_type=int)
+        self._treasury_balance = VarDB(self._TREASURY_BALANCE, db, value_type=int)
 
     def on_install(self) -> None:
         super().on_install()
@@ -172,6 +187,256 @@ class Roulette(IconScoreBase):
 
     def on_update(self) -> None:
         super().on_update()
+        self._day.set(self.now() // U_SECONDS_DAY)
+        self._treasury_balance.set(self.icx.get_balance(self.address))
+
+    @external
+    def set_new_div_live(self) -> None:
+        """
+        Sets the new dividend distribution status as True. Owner sets this when the new dividends distribution is
+        deployed in the mainnet. Only owner can set this status
+        :return:
+        """
+        if self.msg.sender == self.owner:
+            self._new_div_live.set(True)
+
+    @external(readonly=True)
+    def get_new_div_live(self) -> bool:
+        """
+        Returns the status of new dividend distribution.
+        :return: Status of new dividend distribution
+        :rtype: bool
+        """
+        return self._new_div_live.get()
+
+    @external
+    def set_token_score(self, _score: Address) -> None:
+        """
+        Sets the token score address. Only owner can set the address.
+        :param _score: Address of the token score
+        :type _score: :class:`iconservice.base.address.Address`
+        :return:
+        """
+        if self.msg.sender == self.owner:
+            self._token_score.set(_score)
+
+    @external(readonly=True)
+    def get_token_score(self) -> Address:
+        """
+        Returns the token score address
+        :return: TAP token score address
+        :rtype: :class:`iconservice.base.address.Address`
+        """
+        return self._token_score.get()
+
+    @external
+    def set_rewards_score(self, _score: Address) -> None:
+        """
+        Sets the rewards score address. Only owner can set the address.
+        :param _score: Address of the rewards score
+        :type _score: :class:`iconservice.base.address.Address`
+        :return:
+        """
+        if self.msg.sender == self.owner:
+            self._rewards_score.set(_score)
+
+    @external(readonly=True)
+    def get_rewards_score(self) -> Address:
+        """
+        Returns the rewards score address
+        :return: Rewards score address
+        :rtype: :class:`iconservice.base.address.Address`
+        """
+        return self._rewards_score.get()
+
+    @external
+    def set_dividends_score(self, _score: Address) -> None:
+        """
+        Sets the dividends score address. Only owner can set the address.
+        :param _score: Address of the dividends score address
+        :type _score: :class:`iconservice.base.address.Address`
+        :return:
+        """
+        if self.msg.sender == self.owner:
+            self._dividends_score.set(_score)
+
+    @external(readonly=True)
+    def get_dividends_score(self) -> Address:
+        """
+        Returns the dividends score address
+        :return: Dividends score address
+        :rtype: :class:`iconservice.base.address.Address`
+        """
+        return self._dividends_score.get()
+
+    @external
+    def set_game_auth_score(self, _score: Address) -> None:
+        """
+        Sets the game authorization score address. Only owner can set this address
+        :param _score: Address of the game authorization score
+        :type _score: :class:`iconservice.base.address.Address`
+        :return:
+        """
+        if self.msg.sender == self.owner:
+            self._game_auth_score.set(_score)
+
+    @external(readonly=True)
+    def get_game_auth_score(self) -> Address:
+        """
+        Returns the game authorization score address
+        :return: Game authorization score address
+        :rtype: :class:`iconservice.base.address.Address`
+        """
+        return self._game_auth_score.get()
+
+    @external(readonly=True)
+    def get_treasury_status(self) -> bool:
+        """
+        Returns the status of treasury. If the treasury is to be dissolved it returns True
+        :return: True if treasury is to be dissolved
+        :rtype: bool
+        """
+        return self._open_treasury.get()
+
+    @external
+    @payable
+    def set_treasury(self) -> None:
+        """
+        Anyone can add amount to the treasury and increase the treasury minimum
+        Receives the amount and updates the treasury minimum value.
+        Can increase treasury minimum with multiples of 10,000 ICX
+        :return:
+        """
+        if self.msg.value < 10**22:
+            revert("set_treasury method doesnt accept ICX less than 10000 ICX")
+        if self.msg.value % 10**22 != 0:
+            revert("Set treasury error, Please send amount in multiples of 10,000 ICX")
+        self._treasury_min.set(self._treasury_min.get() + self.msg.value)
+        Logger.debug(f'Increasing treasury minimum by {self.msg.value} to {self._treasury_min.get()}.')
+        self._set_bet_limit()
+        self._open_treasury.set(False)
+        self.FundReceived(self.msg.sender, self.msg.value, f"Treasury minimum increased by {self.msg.value}")
+        Logger.debug(f'{self.msg.value} was added to the treasury from address {self.msg.sender}', TAG)
+
+    def _set_bet_limit(self) -> None:
+        """
+        Sets the bet limits for the new treasury minimum
+        :return:
+        """
+        for i, ratio in enumerate(BET_LIMIT_RATIOS):
+            self._bet_limits[i] = self._treasury_min.get() // ratio
+
+    @external
+    def game_on(self) -> None:
+        """
+        Turns on the game. Only owner can turn on the game
+        :return:
+        """
+        if self.msg.sender != self.owner:
+            revert(f'Only the game owner can turn it on.')
+        if not self._game_on.get():
+            self._game_on.set(True)
+            self._day.set(self.now() // U_SECONDS_DAY)
+
+    @external
+    def game_off(self) -> None:
+        """
+        Turns off the game. Only owner can turn off the game
+        :return:
+        """
+        if self.msg.sender != self.owner:
+            revert("Only the score owner can turn it off")
+        if self._game_on.get():
+            self._game_on.set(False)
+
+    @external(readonly=True)
+    def get_game_on_status(self) -> bool:
+        """
+        Returns the status of the game.
+        :return: Status of game
+        :rtype: bool
+        """
+        return self._game_on.get()
+
+    @external(readonly=True)
+    def get_multipliers(self) -> str:
+        """
+        Returns the multipliers of different bet types
+        :return: Multipliers of different bet types
+        :rtype: str
+        """
+        return str(MULTIPLIERS)
+
+    @external(readonly=True)
+    def get_excess(self) -> int:
+        """
+        Returns the current excess of the game
+        :return: Excess of the game
+        :rtype: int
+        """
+        excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get()
+        if not self._new_div_live.get():
+            return excess_to_min_treasury
+        else:
+            auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+            return excess_to_min_treasury - auth_score.get_excess()
+
+    @external(readonly=True)
+    def get_total_distributed(self) -> int:
+        """
+        Returns the total distributed amount from the platform
+        :return: Total distributed excess amount
+        :rtype: int
+        """
+        return self._total_distributed.get()
+
+    @external(readonly=True)
+    def get_total_bets(self) -> int:
+        """
+        Returns the total bets made till date
+        :return: Total bets made till date
+        :rtype: int
+        """
+        return self._total_bet_count.get() + self._daily_bet_count.get()
+
+    @external(readonly=True)
+    def get_todays_bet_total(self) -> int:
+        """
+        Returns the total bets of current day
+        :return: Total bets of current day
+        :rtype: int
+        """
+        return self._daily_bet_count.get()
+
+    @external(readonly=True)
+    def get_treasury_min(self) -> int:
+        """
+        Returns the treasury minimum value
+        :return: Treasury minimum value
+        :rtype: int
+        """
+        return self._treasury_min.get()
+
+    @external(readonly=True)
+    def get_bet_limit(self, n: int) -> int:
+        """
+        Returns the bet limit for the number of selected numbers
+        :param n: No. of selected numbers
+        :type n: int
+        :return: Bet limit in loop
+        :rtype: int
+        """
+        return self._bet_limits[n]
+
+    @external(readonly=True)
+    def get_vote_results(self) -> str:
+        """
+        Returns the vote results of dissolving the treasury.
+        :return: Vote result for treasury to be dissolved e.g. [0,0]
+        :rtype: str
+        """
+        results = [self._yes_votes.get(), self._no_votes.get()]
+        return str(results)
 
     @external(readonly=True)
     def get_score_owner(self) -> Address:
@@ -182,117 +447,115 @@ class Roulette(IconScoreBase):
         """
         return self.owner
 
-    @external
-    def set_token_score(self, _score: Address) -> None:
-        if self.msg.sender == self.owner:
-            self._token_score.set(_score)
-
-    @external
-    def set_rewards_score(self, _score: Address) -> None:
-        if self.msg.sender == self.owner:
-            self._rewards_score.set(_score)
-
-    @external
-    def set_dividends_score(self, _score: Address) -> None:
-        if self.msg.sender == self.owner:
-            self._dividends_score.set(_score)
-
-    @external
-    def set_redistribution_score(self, _score: Address) -> None:
-        if self.msg.sender == self.owner:
-            self._redistribution_score.set(_score)
-
-    @external
-    def set_game_auth_score(self, _score: Address) -> None:
-        if self.msg.sender == self.owner:
-            self._game_auth_score.set(_score)
-
-    @external
-    @payable
-    def set_treasury(self) -> None:
-        if self.msg.sender != self.owner and not self._open_treasury.get():
-            revert('Only the owner can set the treasury if it is not open.')
-        if self._open_treasury.get():
-            self._treasury_min.set(self._treasury_min.get() + self.msg.value)
-            Logger.debug(f'Increasing treasury minimum by {self.msg.value} to '
-                         f'{self._treasury_min.get()}.')
-            self._set_bet_limit()
-            self._excess.set(0)
-        Logger.debug(f'{self.msg.value} was added to the treasury from address {self.msg.sender}', TAG)
-
-    def _set_bet_limit(self) -> None:
-        for i, ratio in enumerate(BET_LIMIT_RATIOS):
-            self._bet_limits[i] = self._treasury_min.get() // ratio
-
-    @external
-    def game_on(self) -> None:
-        if self.msg.sender != self.owner:
-            revert(f'Only the game owner can turn it on.')
-        if not self._game_on.get():
-            self._game_on.set(True)
-            self._day.set(self.now() // U_SECONDS_DAY)
-
     @external(readonly=True)
-    def get_multipliers(self) -> str:
-        return str(MULTIPLIERS)
-
-    @external(readonly=True)
-    def get_excess(self) -> int:
-        return self._excess.get()
-
-    @external(readonly=True)
-    def get_total_distributed(self) -> int:
-        return self._total_distributed.get()
-
-    @external(readonly=True)
-    def get_total_bets(self) -> int:
-        return self._total_bet_count.get() + self._daily_bet_count.get()
-
-    @external(readonly=True)
-    def get_todays_bet_total(self) -> int:
-        return self._daily_bet_count.get()
-
-    @external(readonly=True)
-    def get_game_on_status(self) -> bool:
-        return self._game_on.get()
+    def get_skipped_days(self) -> int:
+        """
+        Returns the number of skipped days. Days are skipped if the distribution is not completed in any previous day.
+        :return: Number of skipped days
+        :rtype: int
+        """
+        return self._skipped_days.get()
 
     @external
-    @payable
     def take_wager(self, _amount: int) -> None:
-        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
-        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
-            revert(f'Bet only accepted through approved games.')
-        auth_score.accumulate_daily_wagers(self.msg.sender, _amount)
+        """
+        Takes wager amount from approved games. The wager amounts are recorded in game authorization score. Checks if
+        the day has been advanced. If the day has advanced the excess amount is transferred to distribution contract.
+        :param _amount: Wager amount to be recorded for excess calculation
+        :return:
+        """
+        self._take_wager(self.msg.sender, _amount)
 
+    def _take_wager(self, _game_address: Address, _amount: int) -> None:
+        """
+        Takes wager amount from approved games.
+        :param _game_address: Address of the game
+        :type _game_address: :class:`iconservice.base.address.Address`
+        :param _amount: Wager amount
+        :type _amount: int
+        :return:
+        """
+        if _amount <= 0:
+            revert(f"Invalid bet amount {_amount}")
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        if auth_score.get_game_status(_game_address) != "gameApproved":
+            revert(f'Bet only accepted through approved games.')
         if self.__day_advanced():
             self.__check_for_dividends()
         self._daily_bet_count.set(self._daily_bet_count.get() + 1)
-        Logger.debug(f'Sending external wager data to rewards score.', TAG)
+        auth_score.accumulate_daily_wagers(_game_address, _amount)
+        Logger.debug(f'Sending wager data to rewards score.', TAG)
         rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
         rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
+        self._treasury_balance.set( self.icx.get_balance(self.address))
+
+    @external
+    def take_rake(self, _wager: int, _payout: int) -> None:
+        """
+        Takes wager amount and payout amount data from games which have their own treasury.
+        :param _wager: Wager you want to record in GAS
+        :param _payout: Payout you want to record
+        :return:
+        """
+        if _payout <= 0:
+            revert("Payout can't be zero")
+        self._take_wager(self.msg.sender, _wager)
+
+        # dry run of wager_payout i.e. make payout without sending ICX
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
+            revert('Payouts can only be invoked by approved games.')
+        auth_score.accumulate_daily_payouts(self.msg.sender, _payout)
+        self._treasury_balance.set( self.icx.get_balance(self.address) )
 
     @external
     def wager_payout(self, _payout: int) -> None:
-        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
-        if auth_score.get_game_status(self.msg.sender) != "gameApproved":
-            revert(f'Payouts can only be invoked by approved games.')
+        """
+        Makes payout to the player of the approved games. Only the approved games can request payout.
+        :param _payout: Payout to be made to the player
+        :return:
+        """
+        self._wager_payout(self.msg.sender, _payout)
 
-        auth_score.accumulate_daily_payouts(self.msg.sender, _payout)
+    def _wager_payout(self, _game_address: Address, _payout: int):
+        """
+        Makes payout to the player of the approved games.
+        :param _game_address: Address of the game requesting payout
+        :type _game_address: :class:`iconservice.base.address.Address`
+        :param _payout: Payout to be made to the player
+        :type _payout: int
+        :return:
+        """
+        if _payout <= 0:
+            revert(f"Invalid payout amount requested {_payout}")
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        if auth_score.get_game_status(_game_address) != "gameApproved":
+            revert(f'Payouts can only be invoked by approved games.')
         try:
             Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
             self.icx.transfer(self.tx.origin, _payout)
             self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
+            auth_score.accumulate_daily_payouts(_game_address, _payout)
             Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
         except BaseException as e:
             Logger.debug(f'Send failed. Exception: {e}', TAG)
             revert('Network problem. Winnings not sent. Returning funds. '
                    f'Exception: {e}')
-        self._excess.set(self.icx.get_balance(self.address) - self._treasury_min.get())
+        self._treasury_balance.set(self.icx.get_balance(self.address))
+  
+
 
     @external
     @payable
     def bet_on_numbers(self, numbers: str, user_seed: str = '') -> None:
-        """Takes a list of numbers in the form of a comma separated string."""
+        """
+        Takes a list of numbers in the form of a comma separated string. e.g. "1,2,3,4" and user seed
+        :param numbers: Numbers selected
+        :type numbers: str
+        :param user_seed: User seed/ Lucky phrase provided by user which is used in random number calculation
+        :type user_seed: str
+        :return:
+        """
         numset = set(numbers.split(','))
         if numset == SET_RED or numset == SET_BLACK:
             self._bet_type.set(BET_TYPES[2])
@@ -305,6 +568,14 @@ class Roulette(IconScoreBase):
     @external
     @payable
     def bet_on_color(self, color: bool, user_seed: str = '') -> None:
+        """
+        The bet is set on either red color or black color.
+        :param color: Red Color is chosen if true. Black if false
+        :type color: blue
+        :param user_seed: User seed/ Lucky phrase provided by user which is used in random number calculation
+        :type user_seed: str
+        :return:
+        """
         self._bet_type.set(BET_TYPES[2])
         if color:
             numbers = WHEEL_RED
@@ -315,6 +586,14 @@ class Roulette(IconScoreBase):
     @external
     @payable
     def bet_on_even_odd(self, even_odd: bool, user_seed: str = '') -> None:
+        """
+        The bet is set on either odd or even numbers.
+        :param even_odd: Odd numbers is chosen if true. Even if false.
+        :type even_odd: bool
+        :param user_seed: User seed/ Lucky phrase provided by user which is used in random number calculation
+        :type user_seed: str
+        :return:
+        """
         self._bet_type.set(BET_TYPES[3])
         if even_odd:
             numbers = WHEEL_ODD
@@ -334,21 +613,14 @@ class Roulette(IconScoreBase):
             revert(f'Only the owner can call the untether method.')
         pass
 
-    @external(readonly=True)
-    def get_treasury_min(self) -> int:
-        return self._treasury_min.get()
-
-    @external(readonly=True)
-    def get_bet_limit(self, n: int) -> int:
-        return self._bet_limits[n]
-
-    @external(readonly=True)
-    def get_vote_results(self) -> str:
-        results = [self._yes_votes.get(), self._no_votes.get()]
-        return str(results)
-
     @external
     def vote(self, option: str) -> None:
+        """
+        Vote takes the votes from TAP holders to dissolve the treasury.
+        :param option: Option to select for dissolving the treasury ("yes" | "no")
+        :type option: str
+        :return:
+        """
         if option not in ['yes', 'no']:
             revert(f'Option must be one of either "yes" or "no".')
         token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
@@ -358,31 +630,30 @@ class Roulette(IconScoreBase):
         self._vote[str(address)] = option
         if address not in self._voted:
             self._voted.put(address)
-            message = "Recorded vote of "
+            message = f"Recorded vote of {str(address)}"
+            self.Vote(self.msg.sender, option, message)
         else:
-            message = "Updated vote to "
-        if not self._vote_result():
-            vote_msg = "Vote remains a 'No'."
+            message = f"{str(address)} updated vote to {option}"
+            self.Vote(address, option, message)
+        if not self.vote_result():
+            vote_msg = "Overall Vote remains a 'No'."
+            self.Vote(address, option, vote_msg)
         else:
-            div_score = self._dividends_score.get()
-            div_score_str = str(div_score)
-            treasury_balance = self.icx.get_balance(self.address)
-            try:
-                Logger.debug(f'Trying to send to ({div_score_str}): {treasury_balance}.', TAG)
-                self.icx.transfer(div_score, treasury_balance)
-                self.FundTransfer(div_score, treasury_balance, "Treasury Liquidation")
-                Logger.debug(f'Sent div score ({div_score_str}) {treasury_balance}.', TAG)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                payoutError = f'Exception: {e}'
-                revert('Network problem. Treasury not sent. '
-                       f'Exception: {e}')
+            # In case the votes is passed, treasury is dissolved by sending all the balance to distribution contract.
+            # Distribution contract will then distribute 80% to tap holders and 20% to founders.
+            self._open_treasury.set(True)
+            self._excess_to_distribute.set(self.icx.get_balance(self.address))
+            self.__check_for_dividends()
             vote_msg = "Vote passed! Treasury balance forwarded to distribution contract."
-            rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
-            rewards_score.set_sweep_address(div_score)
+            self.Vote(address, option, vote_msg)
             self._treasury_min.set(0)
 
-    def _vote_result(self) -> bool:
+    def vote_result(self) -> bool:
+        """
+        Returns the vote result of vote on dissolving the treasury
+        :return: True if majority of votes are yes
+        :rtype: bool
+        """
         token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
         yes = 0
         no = 0
@@ -394,14 +665,21 @@ class Roulette(IconScoreBase):
                 no += token_score.balanceOf(address)
         self._yes_votes.set(yes)
         self._no_votes.set(no)
-        if self._yes_votes.get() > (token_score.totalSupply()
-                                    - token_score.balanceOf(self._rewards_score.get())) // 2:
+        if self._yes_votes.get() > (token_score.totalSupply() - token_score.balanceOf(self._rewards_score.get())) // 2:
             return True
         else:
             return False
 
-    @external(readonly = True)
+    @external(readonly=True)
     def get_batch_size(self, recip_count: int) -> int:
+        """
+        Returns the batch size to be used for distribution according to the number of recipients. Minimum batch size is
+        10 and maximum is 500.
+        :param recip_count: Number of recipients
+        :type recip_count: int
+        :return: Batch size
+        :rtype: int
+        """
         Logger.debug(f'In get_batch_size.', TAG)
         yesterdays_count = self._yesterdays_bet_count.get()
         if yesterdays_count < 1:
@@ -419,9 +697,10 @@ class Roulette(IconScoreBase):
         Generates a random # from tx hash, block timestamp and user provided
         seed. The block timestamp provides the source of unpredictability.
 
-        :param user_seed: string, 'Lucky phrase' provided by user.
-
-        :return: float,  number from [x / 100000.0 for x in range(100000)]
+        :param user_seed: 'Lucky phrase' provided by user.
+        :type user_seed: str
+        :return: number from [x / 100000.0 for x in range(100000)] i.e. [0,0.99999]
+        :rtype: float
         """
         Logger.debug(f'Entered get_random.', TAG)
         seed = (str(bytes.hex(self.tx.hash)) + str(self.now()) + user_seed)
@@ -430,6 +709,13 @@ class Roulette(IconScoreBase):
         return spin
 
     def __day_advanced(self) -> bool:
+        """
+        Checks if day has been advanced nad the TAP distribution as well as dividends distribution has been completed.
+        If the day has advanced and the distribution has completed then the current day is updated, excess is recorded
+        from game authorization score, total bet count is updated and the daily bet count is reset.
+        :return: True if day has advanced and distribution has been completed for previous day
+        :rtype: bool
+        """
         Logger.debug(f'In __day_advanced method.', TAG)
         currentDay = self.now() // U_SECONDS_DAY
         advance = currentDay - self._day.get()
@@ -437,32 +723,28 @@ class Roulette(IconScoreBase):
             return False
         else:
             rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
-            rewards_complete = rewards_score.rewards_dist_complete()
             dividends_score = self.create_interface_score(self._dividends_score.get(), DividendsInterface)
+            auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+            rewards_complete = rewards_score.rewards_dist_complete()
             dividends_complete = dividends_score.dividends_dist_complete()
-            if self._redistribution_score.get() != None:
-                redistribution_score = self.create_interface_score(self._redistribution_score.get(),
-                                                                   RedistributionInterface)
-                redist_complete = redistribution_score.dividends_redist_complete()
-            else:
-                redist_complete = True
-            if not rewards_complete or not dividends_complete or not redist_complete:
+            if not rewards_complete or not dividends_complete:
                 rew = ""
                 div = ""
-                redist = ""
                 if not rewards_complete:
                     rew = " Rewards dist is not complete"
                 if not dividends_complete:
                     div = " Dividends dist is not complete"
-                if not redist_complete:
-                    redist = " Divs Redistribution dist is not complete"
                 self._day.set(currentDay)
                 self._skipped_days.set(self._skipped_days.get() + advance)
                 self.DayAdvance(self._day.get(), self._skipped_days.get(), self.now(),
-                                f'Skipping a day since{rew}{div}{redist}.')
+                                f'Skipping a day since{rew}{div}')
                 return False
+            excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get() 
+            developers_excess = auth_score.record_excess()
+            self._excess_to_distribute.set(developers_excess + max(0, excess_to_min_treasury-developers_excess))
             if advance > 1:
                 self._skipped_days.set(self._skipped_days.get() + advance - 1)
+
             self._day.set(currentDay)
             self._total_bet_count.set(self._total_bet_count.get() + self._daily_bet_count.get())
             self._yesterdays_bet_count.set(self._daily_bet_count.get())
@@ -470,35 +752,48 @@ class Roulette(IconScoreBase):
             self.DayAdvance(self._day.get(), self._skipped_days.get(), self.now(), "Day advanced. Counts reset.")
             return True
 
-    def __check_for_dividends(self):
-        """If there is excess in the treasury, transfer to the distribution contract."""
-        excess = self._excess.get()
+    def __check_for_dividends(self) -> None:
+        """
+        If there is excess in the treasury, transfers to the distribution contract.
+        :return:
+        """
+        if not self._new_div_live.get():    
+            excess = self._treasury_balance.get() - self._treasury_min.get() 
+        else:
+            excess = self._excess_to_distribute.get()
+
         Logger.debug(f'Found treasury excess of {excess}.', TAG)
         if excess > 0:
+            
             try:
                 Logger.debug(f'Trying to send to ({self._dividends_score.get()}): {excess}.', TAG)
                 self.icx.transfer(self._dividends_score.get(), excess)
-                self.FundTransfer(self._dividends_score.get(), excess, "Game Dividend")
+                self.FundTransfer(self._dividends_score.get(), excess, "Excess made by games")
                 Logger.debug(f'Sent div score ({self._dividends_score.get()}) {excess}.', TAG)
                 self._total_distributed.set(self._total_distributed.get() + excess)
+                self._excess_to_distribute.set(0)
             except BaseException as e:
                 Logger.debug(f'Send failed. Exception: {e}', TAG)
                 revert('Network problem. Excess not sent. '
                        f'Exception: {e}')
 
     def __bet(self, numbers: str, user_seed: str) -> None:
-        """Takes a list of numbers in the form of a comma separated string."""
+        """
+        Takes a list of numbers in the form of a comma separated string and the user seed
+        :param numbers: The numbers which are selected for the bet
+        :type numbers: str
+        :param user_seed: User seed/ Lucky phrase provided by user which is used in random number calculation
+        :type user_seed: str
+        :return:
+        """
         self.BetSource(self.tx.origin, self.tx.timestamp)
         if not self._game_on.get():
             Logger.debug(f'Game not active yet.', TAG)
             revert(f'Game not active yet.')
-        if self.__day_advanced():
-            self.__check_for_dividends()
-        self._daily_bet_count.set(self._daily_bet_count.get() + 1)
-
         amount = self.msg.value
         Logger.debug(f'Betting {amount} loop on {numbers}.', TAG)
         self.BetPlaced(amount, numbers)
+        self._take_wager(self.address, amount)
 
         nums = set(numbers.split(','))
         n = len(nums)
@@ -514,8 +809,8 @@ class Roulette(IconScoreBase):
         for num in nums:
             if num not in numset:
                 Logger.debug(f'Invalid number submitted.', TAG)
-                revert(
-                    f' Please check your bet. Numbers must be between 0 and 20, submitted as a comma separated string. Returning funds.')
+                revert(f' Please check your bet. Numbers must be between 0 and 20, submitted as a comma separated '
+                       f'string. Returning funds.')
 
         bet_type = self._bet_type.get()
         self._bet_type.set(BET_TYPES[0])
@@ -545,29 +840,23 @@ class Roulette(IconScoreBase):
         self.BetResult(str(spin), winningNumber, payout)
 
         if win == 1:
-            Logger.debug(f'Amount owed to winner: {payout}', TAG)
-            try:
-                Logger.debug(f'Trying to send to ({self.tx.origin}): {payout}.', TAG)
-                self.icx.transfer(self.tx.origin, payout)
-                self.FundTransfer(self.tx.origin, payout, "Player Winnings")
-                Logger.debug(f'Sent winner ({self.tx.origin}) {payout}.', TAG)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                revert('Network problem. Winnings not sent. Returning funds.')
+            self._wager_payout(self.address, payout)
         else:
             Logger.debug(f'Player lost. ICX retained in treasury.', TAG)
 
-        self._excess.set(self.icx.get_balance(self.address) - self._treasury_min.get())
-
-        Logger.debug(f'Sending wager data to rewards score.', TAG)
-        rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
-        rewards_score.accumulate_wagers(str(self.tx.origin), self.msg.value,
-                                        (self._day.get() - self._skipped_days.get()) % 2)
+    @payable
+    @external
+    def add_to_excess(self) -> None:
+        """
+        Users can add to excess, excess added by this method will be only shared to tap holders and wager wars
+        :return:
+        """
+        if self.msg.value <= 0:
+            revert("No amount added to excess")
+        self.FundReceived(self.msg.sender, self.msg.value, f"{self.msg.value} added to excess")
 
     @payable
     def fallback(self):
         auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
-
         if auth_score.get_game_status(self.msg.sender) != "gameApproved":
-            revert(
-                f'This score only accepts ICX through approved games or from the score owner through the set_treasury method.')
+            revert(f'This score accepts plain ICX through approved games and through set_treasury, add_to_excess method.')
