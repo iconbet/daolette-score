@@ -209,15 +209,6 @@ class Roulette(IconScoreBase):
         """
         return self._new_div_live.get()
 
-    @external(readonly=True)
-    def get_score_owner(self) -> Address:
-        """
-        A function to return the owner of this score.
-        :return: Owner address of this score
-        :rtype: :class:`iconservice.base.address.Address`
-        """
-        return self.owner
-
     @external
     def set_token_score(self, _score: Address) -> None:
         """
