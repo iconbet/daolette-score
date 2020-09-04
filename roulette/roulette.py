@@ -56,6 +56,10 @@ class DividendsInterface(InterfaceScore):
     def dividends_dist_complete(self) -> bool:
         pass
 
+    @interface
+    def get_inhouse_games(self) -> list:
+        pass
+
 
 # An interface of Game Authorization Score to get list of authorized game scores
 class AuthInterface(InterfaceScore):
@@ -77,6 +81,14 @@ class AuthInterface(InterfaceScore):
 
     @interface
     def record_excess(self) -> int:
+        pass
+
+    @interface
+    def get_todays_games_excess(self) -> dict:
+        pass
+
+    @interface
+    def get_yesterdays_games_excess(self) -> dict:
         pass
 
 
@@ -108,6 +120,8 @@ class Roulette(IconScoreBase):
 
     _NEW_DIV_LIVE = "new_div_live"
     _TREASURY_BALANCE = "treasury_balance"
+
+    _EXCESS_SMOOTHING_LIVE = "excess_smoothing_live"
 
     @eventlog(indexed=2)
     def FundTransfer(self, recipient: Address, amount: int, note: str):
@@ -167,6 +181,8 @@ class Roulette(IconScoreBase):
         self._excess_to_distribute = VarDB(self._EXCESS_TO_DISTRIBUTE, db, value_type=int)
         self._treasury_balance = VarDB(self._TREASURY_BALANCE, db, value_type=int)
 
+        self._excess_smoothing_live = VarDB(self._EXCESS_SMOOTHING_LIVE, db, value_type=bool)
+
     def on_install(self) -> None:
         super().on_install()
         self._excess.set(0)
@@ -187,28 +203,27 @@ class Roulette(IconScoreBase):
 
     def on_update(self) -> None:
         super().on_update()
-        self._day.set(self.now() // U_SECONDS_DAY)
-        self._treasury_balance.set(self.icx.get_balance(self.address))
+        self._excess_smoothing_live.set(False)
 
     @external
-    def set_new_div_live(self) -> None:
+    def toggle_excess_smoothing(self) -> None:
         """
-        Sets the new dividend distribution status as True. Owner sets this when the new dividends distribution is
-        deployed in the mainnet. Only owner can set this status
+        Toggles the status of excess smoothing between true and false. If its true, it keeps the 10% of excess to be
+        distributed to tap holders and wager war in the treasury itself making a positive start for next day. If false,
+        the feature is disabled
         :return:
         """
-        if self.msg.sender == self.owner:
-            self._new_div_live.set(True)
+        if self.msg.sender != self.owner:
+            revert("This method can only be invoked by the score owner. You are trying for unauthorized access")
+        self._excess_smoothing_live.set(not self._excess_smoothing_live.get())
 
     @external(readonly=True)
-    def get_new_div_live(self) -> bool:
+    def get_excess_smoothing_status(self) -> bool:
         """
-        Returns the status of new dividend distribution.
-        :return: Status of new dividend distribution
-        :rtype: bool
+        Status of excess smoothing.
+        :return: Returns the boolean value representing the status of excess smoothing
         """
-        return self._new_div_live.get()
-
+        return self._excess_smoothing_live.get()
 
     @external
     def set_token_score(self, _score: Address) -> None:
@@ -371,16 +386,25 @@ class Roulette(IconScoreBase):
     @external(readonly=True)
     def get_excess(self) -> int:
         """
-        Returns the current excess of the game
-        :return: Excess of the game
+        Returns the reward pool of the ICONbet platform
+        :return: Reward pool of the ICONbet platform
         :rtype: int
         """
         excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get()
-        if not self._new_div_live.get():
-            return excess_to_min_treasury
-        else:
-            auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
+        div_score = self.create_interface_score(self._dividends_score.get(), DividendsInterface)
+        if not self._excess_smoothing_live.get():
             return excess_to_min_treasury - auth_score.get_excess()
+        else:
+            third_party_games_excess: int = 0
+            games_excess = auth_score.get_todays_games_excess()
+            inhouse_games = div_score.get_inhouse_games()
+            for game in games_excess:
+                address = Address.from_string(game)
+                if address not in inhouse_games:
+                    third_party_games_excess += max(0, int(games_excess[game]))
+            reward_pool = excess_to_min_treasury - third_party_games_excess * 20//100
+            return reward_pool
 
     @external(readonly=True)
     def get_total_distributed(self) -> int:
@@ -507,7 +531,7 @@ class Roulette(IconScoreBase):
         if auth_score.get_game_status(self.msg.sender) != "gameApproved":
             revert('Payouts can only be invoked by approved games.')
         auth_score.accumulate_daily_payouts(self.msg.sender, _payout)
-        self._treasury_balance.set( self.icx.get_balance(self.address) )
+        self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
     def wager_payout(self, _payout: int) -> None:
@@ -544,7 +568,6 @@ class Roulette(IconScoreBase):
                    f'Exception: {e}')
         self._treasury_balance.set(self.icx.get_balance(self.address))
   
-
 
     @external
     @payable
@@ -740,9 +763,24 @@ class Roulette(IconScoreBase):
                 self.DayAdvance(self._day.get(), self._skipped_days.get(), self.now(),
                                 f'Skipping a day since{rew}{div}')
                 return False
+
+            # Set excess to distribute
             excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get() 
             developers_excess = auth_score.record_excess()
-            self._excess_to_distribute.set(developers_excess + max(0, excess_to_min_treasury-developers_excess))
+            self._excess_to_distribute.set(developers_excess + max(0, excess_to_min_treasury - developers_excess))
+
+            if self._excess_smoothing_live.get():
+                third_party_games_excess: int = 0
+                games_excess = auth_score.get_yesterdays_games_excess()
+                inhouse_games = dividends_score.get_inhouse_games()
+                for game in games_excess:
+                    address = Address.from_string(game)
+                    if address not in inhouse_games:
+                        third_party_games_excess += max(0, int(games_excess[game]))
+                partner_developer = third_party_games_excess*20//100
+                reward_pool = max(0, (excess_to_min_treasury - partner_developer)*90//100)
+                self._excess_to_distribute.set(partner_developer + reward_pool)
+
             if advance > 1:
                 self._skipped_days.set(self._skipped_days.get() + advance - 1)
 
@@ -758,10 +796,7 @@ class Roulette(IconScoreBase):
         If there is excess in the treasury, transfers to the distribution contract.
         :return:
         """
-        if not self._new_div_live.get():    
-            excess = self._treasury_balance.get() - self._treasury_min.get() 
-        else:
-            excess = self._excess_to_distribute.get()
+        excess = self._excess_to_distribute.get()
 
         Logger.debug(f'Found treasury excess of {excess}.', TAG)
         if excess > 0:
@@ -854,6 +889,7 @@ class Roulette(IconScoreBase):
         """
         if self.msg.value <= 0:
             revert("No amount added to excess")
+        self._treasury_balance.set(self.icx.get_balance(self.address))
         self.FundReceived(self.msg.sender, self.msg.value, f"{self.msg.value} added to excess")
 
     @payable
