@@ -209,6 +209,7 @@ class Roulette(IconScoreBase):
         """
         return self._new_div_live.get()
 
+
     @external
     def set_token_score(self, _score: Address) -> None:
         """
