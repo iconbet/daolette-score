@@ -482,6 +482,13 @@ class Roulette(IconScoreBase):
         return self._skipped_days.get()
 
     @external
+    @payable
+    def send_wager(self,_amount:int):
+        if self.msg.value != _amount:
+            revert('ICX sent and the amount in the parameters are not same')
+        self._take_wager(self.msg.sender, _amount)
+
+    @external
     def take_wager(self, _amount: int) -> None:
         """
         Takes wager amount from approved games. The wager amounts are recorded in game authorization score. Checks if
@@ -515,6 +522,7 @@ class Roulette(IconScoreBase):
         self._treasury_balance.set( self.icx.get_balance(self.address))
 
     @external
+    @payable
     def take_rake(self, _wager: int, _payout: int) -> None:
         """
         Takes wager amount and payout amount data from games which have their own treasury.
@@ -568,7 +576,6 @@ class Roulette(IconScoreBase):
                    f'Exception: {e}')
         self._treasury_balance.set(self.icx.get_balance(self.address))
   
-
     @external
     @payable
     def bet_on_numbers(self, numbers: str, user_seed: str = '') -> None:
@@ -630,7 +637,6 @@ class Roulette(IconScoreBase):
         """
         A function to redefine the value of self.owner once it is possible.
         To be included through an update if it is added to IconService.
-
         Sets the value of self.owner to the score holding the game treasury.
         """
         if self.msg.sender != self.owner:
@@ -720,7 +726,6 @@ class Roulette(IconScoreBase):
         """
         Generates a random # from tx hash, block timestamp and user provided
         seed. The block timestamp provides the source of unpredictability.
-
         :param user_seed: 'Lucky phrase' provided by user.
         :type user_seed: str
         :return: number from [x / 100000.0 for x in range(100000)] i.e. [0,0.99999]
@@ -896,4 +901,5 @@ class Roulette(IconScoreBase):
     def fallback(self):
         auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
         if auth_score.get_game_status(self.msg.sender) != "gameApproved":
-            revert(f'This score accepts plain ICX through approved games and through set_treasury, add_to_excess method.')
+            revert(
+                f'This score accepts plain ICX through approved games and through set_treasury, add_to_excess method.')
