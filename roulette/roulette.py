@@ -489,6 +489,14 @@ class Roulette(IconScoreBase):
         self._take_wager(self.msg.sender, _amount)
 
     @external
+    @payable
+    def send_rake(self,_wager: int, _payout: int):
+        if self.msg.value != (_wager - _payout):
+            revert('ICX sent and the amount in the parameters are not same')
+        self.take_rake(_wager, _payout)
+    
+
+    @external
     def take_wager(self, _amount: int) -> None:
         """
         Takes wager amount from approved games. The wager amounts are recorded in game authorization score. Checks if
@@ -522,7 +530,6 @@ class Roulette(IconScoreBase):
         self._treasury_balance.set( self.icx.get_balance(self.address))
 
     @external
-    @payable
     def take_rake(self, _wager: int, _payout: int) -> None:
         """
         Takes wager amount and payout amount data from games which have their own treasury.
