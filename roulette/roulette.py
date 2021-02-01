@@ -123,6 +123,10 @@ class Roulette(IconScoreBase):
 
     _EXCESS_SMOOTHING_LIVE = "excess_smoothing_live"
 
+    _DAOFUND_SCORE = "daofund_score"
+    _YESTERDAYS_EXCESS = "yesterdays_excess"
+    _DAOFUND_TO_DISTRIBUTE = "daofund_to_distribute"
+
     @eventlog(indexed=2)
     def FundTransfer(self, recipient: Address, amount: int, note: str):
         pass
@@ -183,6 +187,10 @@ class Roulette(IconScoreBase):
 
         self._excess_smoothing_live = VarDB(self._EXCESS_SMOOTHING_LIVE, db, value_type=bool)
 
+        self._daofund_score = VarDB(self._DAOFUND_SCORE, db, value_type=Address)
+        self._yesterdays_excess = VarDB(self._YESTERDAYS_EXCESS, db, value_type=int)
+        self._daofund_to_distirbute = VarDB(self._DAOFUND_TO_DISTRIBUTE, db, value_type=int)
+
     def on_install(self) -> None:
         super().on_install()
         self._excess.set(0)
@@ -203,7 +211,9 @@ class Roulette(IconScoreBase):
 
     def on_update(self) -> None:
         super().on_update()
-        self._excess_smoothing_live.set(False)
+        self._daofund_score.set(Address.from_string("cx3efe110f76be1c223547f4c1a62dcc681f11af34"))
+        self._yesterdays_excess.set(0)
+        self._daofund_to_distirbute.set(0)
 
     @external
     def toggle_excess_smoothing(self) -> None:
@@ -481,6 +491,22 @@ class Roulette(IconScoreBase):
         """
         return self._skipped_days.get()
 
+    @external(readonly=True)
+    def get_yesterdays_excess(self) -> int:
+        return self._yesterdays_excess.get()
+
+    @external(readonly=True)
+    def get_daofund_score(self) -> Address:
+        return self._daofund_score.get()
+
+    @external
+    def set_daofund_score(self, _score: Address) -> None:
+        if self.msg.sender != self.owner:
+            revert("TREASURY: DAOfund address can only be set by owner")
+        if not _score.is_contract:
+            revert("TREASURY: Only contract address is accepted for DAOfund")
+        self._daofund_score.set(_score)
+
     @external
     @payable
     def send_wager(self,_amount:int):
@@ -494,7 +520,6 @@ class Roulette(IconScoreBase):
         if self.msg.value != (_wager - _payout):
             revert('ICX sent and the amount in the parameters are not same')
         self.take_rake(_wager, _payout)
-    
 
     @external
     def take_wager(self, _amount: int) -> None:
@@ -582,7 +607,7 @@ class Roulette(IconScoreBase):
             revert('Network problem. Winnings not sent. Returning funds. '
                    f'Exception: {e}')
         self._treasury_balance.set(self.icx.get_balance(self.address))
-  
+
     @external
     @payable
     def bet_on_numbers(self, numbers: str, user_seed: str = '') -> None:
@@ -777,7 +802,7 @@ class Roulette(IconScoreBase):
                 return False
 
             # Set excess to distribute
-            excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get() 
+            excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get()
             developers_excess = auth_score.record_excess()
             self._excess_to_distribute.set(developers_excess + max(0, excess_to_min_treasury - developers_excess))
 
@@ -791,7 +816,10 @@ class Roulette(IconScoreBase):
                         third_party_games_excess += max(0, int(games_excess[game]))
                 partner_developer = third_party_games_excess*20//100
                 reward_pool = max(0, (excess_to_min_treasury - partner_developer)*90//100)
+                daofund = max(0, (excess_to_min_treasury - partner_developer)*5//100)
                 self._excess_to_distribute.set(partner_developer + reward_pool)
+                self._yesterdays_excess.set(excess_to_min_treasury - partner_developer)
+                self._daofund_to_distirbute.set(daofund)
 
             if advance > 1:
                 self._skipped_days.set(self._skipped_days.get() + advance - 1)
@@ -809,10 +837,10 @@ class Roulette(IconScoreBase):
         :return:
         """
         excess = self._excess_to_distribute.get()
+        daofund = self._daofund_to_distirbute.get()
 
         Logger.debug(f'Found treasury excess of {excess}.', TAG)
         if excess > 0:
-            
             try:
                 Logger.debug(f'Trying to send to ({self._dividends_score.get()}): {excess}.', TAG)
                 self.icx.transfer(self._dividends_score.get(), excess)
@@ -823,6 +851,15 @@ class Roulette(IconScoreBase):
             except BaseException as e:
                 Logger.debug(f'Send failed. Exception: {e}', TAG)
                 revert('Network problem. Excess not sent. '
+                       f'Exception: {e}')
+
+        if daofund > 0:
+            try:
+                self._daofund_to_distirbute.set(0)
+                self.icx.transfer(self._daofund_score.get(), daofund)
+                self.FundTransfer(self._daofund_score.get(), daofund, "Excess transerred to daofund")
+            except BaseException as e:
+                revert('Network problem. DAOfund not sent. '
                        f'Exception: {e}')
 
     def __bet(self, numbers: str, user_seed: str) -> None:
