@@ -203,7 +203,6 @@ class Roulette(IconScoreBase):
 
     def on_update(self) -> None:
         super().on_update()
-        self._excess_smoothing_live.set(False)
 
     @external
     def toggle_excess_smoothing(self) -> None:
