@@ -491,6 +491,22 @@ class Roulette(IconScoreBase):
         """
         return self._skipped_days.get()
 
+    @external(readonly=True)
+    def get_yesterdays_excess(self) -> int:
+        return self._yesterdays_excess.get()
+
+    @external(readonly=True)
+    def get_daofund_score(self) -> Address:
+        return self._daofund_score.get()
+
+    @external
+    def set_daofund_score(self, _score: Address) -> None:
+        if self.msg.sender != self.owner:
+            revert("TREASURY: DAOfund address can only be set by owner")
+        if not _score.is_contract:
+            revert("TREASURY: Only contract address is accepted for DAOfund")
+        self._daofund_score.set(_score)
+
     @external
     @payable
     def send_wager(self,_amount:int):
