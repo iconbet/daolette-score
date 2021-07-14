@@ -211,9 +211,6 @@ class Roulette(IconScoreBase):
 
     def on_update(self) -> None:
         super().on_update()
-        self._daofund_score.set(Address.from_string("cx3efe110f76be1c223547f4c1a62dcc681f11af34"))
-        self._yesterdays_excess.set(0)
-        self._daofund_to_distirbute.set(0)
 
     @external
     def toggle_excess_smoothing(self) -> None:
