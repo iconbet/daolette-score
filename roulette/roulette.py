@@ -1,6 +1,6 @@
 from iconservice import *
 
-TAG = 'ROUL'
+TAG = 'ICONbet Treasury'
 
 # Treasury minimum 2.5E+23, or 250,000 ICX.
 TREASURY_MINIMUM = 250000000000000000000000
