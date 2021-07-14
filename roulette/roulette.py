@@ -8,7 +8,7 @@ TREASURY_MINIMUM = 250000000000000000000000
 BET_LIMIT_RATIOS = [147, 2675, 4315, 2725, 1930, 1454, 1136, 908, 738, 606,
                     500, 413, 341, 280, 227, 182, 142, 107, 76, 48, 23]
 BET_MIN = 100000000000000000  # 1.0E+17, .1 ICX
-U_SECONDS_DAY = 86400000000 # Microseconds in a day.
+U_SECONDS_DAY = 86400000000  # Microseconds in a day.
 
 TX_MIN_BATCH_SIZE = 10
 TX_MAX_BATCH_SIZE = 500
@@ -333,10 +333,10 @@ class Roulette(IconScoreBase):
         Can increase treasury minimum with multiples of 10,000 ICX
         :return:
         """
-        if self.msg.value < 10**22:
-            revert("set_treasury method doesnt accept ICX less than 10000 ICX")
-        if self.msg.value % 10**22 != 0:
-            revert("Set treasury error, Please send amount in multiples of 10,000 ICX")
+        if self.msg.value < 10 ** 22:
+            revert(f"{TAG}: set_treasury method doesnt accept ICX less than 10000 ICX")
+        if self.msg.value % 10 ** 22 != 0:
+            revert(f"{TAG}: Set treasury error, Please send amount in multiples of 10,000 ICX")
         self._treasury_min.set(self._treasury_min.get() + self.msg.value)
         Logger.debug(f'Increasing treasury minimum by {self.msg.value} to {self._treasury_min.get()}.')
         self._set_bet_limit()
@@ -509,14 +509,14 @@ class Roulette(IconScoreBase):
 
     @external
     @payable
-    def send_wager(self,_amount:int):
+    def send_wager(self, _amount: int):
         if self.msg.value != _amount:
             revert('ICX sent and the amount in the parameters are not same')
         self._take_wager(self.msg.sender, _amount)
 
     @external
     @payable
-    def send_rake(self,_wager: int, _payout: int):
+    def send_rake(self, _wager: int, _payout: int):
         if self.msg.value != (_wager - _payout):
             revert('ICX sent and the amount in the parameters are not same')
         self.take_rake(_wager, _payout)
@@ -552,7 +552,7 @@ class Roulette(IconScoreBase):
         Logger.debug(f'Sending wager data to rewards score.', TAG)
         rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
         rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
-        self._treasury_balance.set( self.icx.get_balance(self.address))
+        self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
     def take_rake(self, _wager: int, _payout: int) -> None:
