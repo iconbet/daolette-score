@@ -947,3 +947,10 @@ class Roulette(IconScoreBase):
         if auth_score.get_game_status(self.msg.sender) != "gameApproved":
             revert(
                 f'This score accepts plain ICX through approved games and through set_treasury, add_to_excess method.')
+
+    @payable
+    @external
+    def transfer_to_dividends(self, _amount: int):
+        if self.msg.sender != self.owner:
+            revert(f"{TAG}: Only owner can transfer the amount to dividends contract.")
+        self.icx.transfer(self._dividends_score.get(), _amount)
