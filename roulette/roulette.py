@@ -936,7 +936,7 @@ class Roulette(IconScoreBase):
 
     @payable
     @external
-    def transfer_to_dividends(self, _amount: int):
+    def transfer_to_dividends(self):
         if self.msg.sender != self.owner:
             revert(f"{TAG}: Only owner can transfer the amount to dividends contract.")
-        self.icx.transfer(self._dividends_score.get(), _amount)
+        self.icx.transfer(self._dividends_score.get(), self.msg.value)
