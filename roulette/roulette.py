@@ -56,10 +56,6 @@ class DividendsInterface(InterfaceScore):
     def dividends_dist_complete(self) -> bool:
         pass
 
-    @interface
-    def get_inhouse_games(self) -> list:
-        pass
-
 
 # An interface of Game Authorization Score to get list of authorized game scores
 class AuthInterface(InterfaceScore):
@@ -399,18 +395,14 @@ class Roulette(IconScoreBase):
         """
         excess_to_min_treasury = self._treasury_balance.get() - self._treasury_min.get()
         auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
-        div_score = self.create_interface_score(self._dividends_score.get(), DividendsInterface)
         if not self._excess_smoothing_live.get():
             return excess_to_min_treasury - auth_score.get_excess()
         else:
             third_party_games_excess: int = 0
             games_excess = auth_score.get_todays_games_excess()
-            inhouse_games = div_score.get_inhouse_games()
             for game in games_excess:
-                address = Address.from_string(game)
-                if address not in inhouse_games:
-                    third_party_games_excess += max(0, int(games_excess[game]))
-            reward_pool = excess_to_min_treasury - third_party_games_excess * 20//100
+                third_party_games_excess += max(0, int(games_excess[game]))
+            reward_pool = excess_to_min_treasury - third_party_games_excess * 20 // 100
             return reward_pool
 
     @external(readonly=True)
@@ -806,14 +798,11 @@ class Roulette(IconScoreBase):
             if self._excess_smoothing_live.get():
                 third_party_games_excess: int = 0
                 games_excess = auth_score.get_yesterdays_games_excess()
-                inhouse_games = dividends_score.get_inhouse_games()
                 for game in games_excess:
-                    address = Address.from_string(game)
-                    if address not in inhouse_games:
-                        third_party_games_excess += max(0, int(games_excess[game]))
-                partner_developer = third_party_games_excess*20//100
-                reward_pool = max(0, (excess_to_min_treasury - partner_developer)*90//100)
-                daofund = max(0, (excess_to_min_treasury - partner_developer)*5//100)
+                    third_party_games_excess += max(0, int(games_excess[game]))
+                partner_developer = third_party_games_excess * 20 // 100
+                reward_pool = max(0, (excess_to_min_treasury - partner_developer) * 90 // 100)
+                daofund = max(0, (excess_to_min_treasury - partner_developer) * 5 // 100)
                 self._excess_to_distribute.set(partner_developer + reward_pool)
                 self._yesterdays_excess.set(excess_to_min_treasury - partner_developer)
                 self._daofund_to_distirbute.set(daofund)
