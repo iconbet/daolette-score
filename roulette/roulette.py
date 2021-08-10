@@ -123,8 +123,6 @@ class Roulette(IconScoreBase):
     _YESTERDAYS_EXCESS = "yesterdays_excess"
     _DAOFUND_TO_DISTRIBUTE = "daofund_to_distribute"
 
-    _RECENT_GAME_WAGER = "recent_game_wager"
-
     @eventlog(indexed=2)
     def FundTransfer(self, recipient: Address, amount: int, note: str):
         pass
@@ -188,8 +186,6 @@ class Roulette(IconScoreBase):
         self._daofund_score = VarDB(self._DAOFUND_SCORE, db, value_type=Address)
         self._yesterdays_excess = VarDB(self._YESTERDAYS_EXCESS, db, value_type=int)
         self._daofund_to_distirbute = VarDB(self._DAOFUND_TO_DISTRIBUTE, db, value_type=int)
-
-        self._recent_game_wager = VarDB(self._RECENT_GAME_WAGER, db, value_type=int)
 
     def on_install(self) -> None:
         super().on_install()
@@ -542,23 +538,10 @@ class Roulette(IconScoreBase):
             self.__check_for_dividends()
         self._daily_bet_count.set(self._daily_bet_count.get() + 1)
         auth_score.accumulate_daily_wagers(_game_address, _amount)
-        self._recent_game_wager.set(_amount)
         Logger.debug(f'Sending wager data to rewards score.', TAG)
         rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
         rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
         self._treasury_balance.set(self.icx.get_balance(self.address))
-
-    def _return_recent_wager(self):
-        _amount = self._recent_game_wager.get()
-        if _amount <= 0:
-            revert(f"Invalid return amount {_amount}")
-        try:
-            self.icx.transfer(self.tx.origin, _amount)
-            self.FundTransfer(self.tx.origin, _amount, f'Return Wager from {self.msg.sender}.')
-            Logger.debug(f'Returned wager ({self.tx.origin}) {_amount}.', TAG)
-        except BaseException as e:
-            Logger.debug(f'Send failed. Exception: {e}', TAG)
-            revert('Network problem. Winnings not sent. Returning funds. Exception: {e}')
 
     @external
     def take_rake(self, _wager: int, _payout: int) -> None:
@@ -612,8 +595,6 @@ class Roulette(IconScoreBase):
             except BaseException as e:
                 Logger.debug(f'Send failed. Exception: {e}', TAG)
                 revert('Network problem. Winnings not sent. Returning funds. Exception: {e}')
-        else:
-            self._return_recent_wager()
         self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
