@@ -68,7 +68,7 @@ class AuthInterface(InterfaceScore):
         pass
 
     @interface
-    def accumulate_daily_payouts(self, game: Address, payout: int) -> None:
+    def accumulate_daily_payouts(self, game: Address, payout: int) -> bool:
         pass
 
     @interface
