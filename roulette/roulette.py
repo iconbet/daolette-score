@@ -68,7 +68,7 @@ class AuthInterface(InterfaceScore):
         pass
 
     @interface
-    def accumulate_daily_payouts(self, game: Address, payout: int) -> None:
+    def accumulate_daily_payouts(self, game: Address, payout: int) -> bool:
         pass
 
     @interface
@@ -585,16 +585,16 @@ class Roulette(IconScoreBase):
         auth_score = self.create_interface_score(self._game_auth_score.get(), AuthInterface)
         if auth_score.get_game_status(_game_address) != "gameApproved":
             revert(f'Payouts can only be invoked by approved games.')
-        try:
-            Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
-            self.icx.transfer(self.tx.origin, _payout)
-            self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
-            auth_score.accumulate_daily_payouts(_game_address, _payout)
-            Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
-        except BaseException as e:
-            Logger.debug(f'Send failed. Exception: {e}', TAG)
-            revert('Network problem. Winnings not sent. Returning funds. '
-                   f'Exception: {e}')
+
+        if auth_score.accumulate_daily_payouts(_game_address, _payout):
+            try:
+                Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
+                self.icx.transfer(self.tx.origin, _payout)
+                self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
+                Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
+            except BaseException as e:
+                Logger.debug(f'Send failed. Exception: {e}', TAG)
+                revert('Network problem. Winnings not sent. Returning funds. Exception: {e}')
         self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
