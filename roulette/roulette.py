@@ -536,7 +536,6 @@ class Roulette(IconScoreBase):
             self.__check_for_dividends()
         self._daily_bet_count.set(self._daily_bet_count.get() + 1)
         auth_score.accumulate_daily_wagers(_game_address, _amount)
-        Logger.debug(f'Sending wager data to rewards score.', TAG)
         rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
         rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
         self._treasury_balance.set(self.icx.get_balance(self.address))
@@ -586,12 +585,9 @@ class Roulette(IconScoreBase):
 
         if auth_score.accumulate_daily_payouts(_game_address, _payout):
             try:
-                Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
                 self.icx.transfer(self.tx.origin, _payout)
                 self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
-                Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
             except Exception:
-                Logger.debug(f'Send failed.', TAG)
                 revert('Network problem. Winnings not sent. Returning funds.')
         self._treasury_balance.set(self.icx.get_balance(self.address))
 
@@ -672,7 +668,6 @@ class Roulette(IconScoreBase):
         :return: Batch size
         :rtype: int
         """
-        Logger.debug(f'In get_batch_size.', TAG)
         yesterdays_count = self._yesterdays_bet_count.get()
         if yesterdays_count < 1:
             yesterdays_count = 1
@@ -681,7 +676,6 @@ class Roulette(IconScoreBase):
             size = TX_MIN_BATCH_SIZE
         if size > TX_MAX_BATCH_SIZE:
             size = TX_MAX_BATCH_SIZE
-        Logger.debug(f'Returning batch size of {size}', TAG)
         return size
 
     def get_random(self, user_seed: str = '') -> float:
@@ -693,10 +687,8 @@ class Roulette(IconScoreBase):
         :return: number from [x / 100000.0 for x in range(100000)] i.e. [0,0.99999]
         :rtype: float
         """
-        Logger.debug(f'Entered get_random.', TAG)
         seed = (str(bytes.hex(self.tx.hash)) + str(self.now()) + user_seed)
         spin = (int.from_bytes(sha3_256(seed.encode()), "big") % 100000) / 100000.0
-        Logger.debug(f'Result of the spin was {spin}.', TAG)
         return spin
 
     def __day_advanced(self) -> bool:
@@ -707,7 +699,6 @@ class Roulette(IconScoreBase):
         :return: True if day has advanced and distribution has been completed for previous day
         :rtype: bool
         """
-        Logger.debug(f'In __day_advanced method.', TAG)
         currentDay = self.now() // U_SECONDS_DAY
         advance = currentDay - self._day.get()
         if advance < 1:
@@ -766,17 +757,13 @@ class Roulette(IconScoreBase):
         excess = self._excess_to_distribute.get()
         daofund = self._daofund_to_distirbute.get()
 
-        Logger.debug(f'Found treasury excess of {excess}.', TAG)
         if excess > 0:
             try:
-                Logger.debug(f'Trying to send to ({self._dividends_score.get()}): {excess}.', TAG)
                 self.icx.transfer(self._dividends_score.get(), excess)
                 self.FundTransfer(self._dividends_score.get(), excess, "Excess made by games")
-                Logger.debug(f'Sent div score ({self._dividends_score.get()}) {excess}.', TAG)
                 self._total_distributed.set(self._total_distributed.get() + excess)
                 self._excess_to_distribute.set(0)
             except Exception:
-                Logger.debug(f'Send failed.', TAG)
                 revert('Network problem. Excess not sent.')
 
         if daofund > 0:
@@ -798,27 +785,22 @@ class Roulette(IconScoreBase):
         """
         self.BetSource(self.tx.origin, self.tx.timestamp)
         if not self._game_on.get():
-            Logger.debug(f'Game not active yet.', TAG)
             revert(f'Game not active yet.')
         amount = self.msg.value
-        Logger.debug(f'Betting {amount} loop on {numbers}.', TAG)
         self.BetPlaced(amount, numbers)
         self._take_wager(self.address, amount)
 
         nums = set(numbers.split(','))
         n = len(nums)
         if n == 0:
-            Logger.debug(f'Bet placed without numbers.', TAG)
             revert(f' Invalid bet. No numbers submitted. Zero win chance. Returning funds.')
         elif n > 20:
-            Logger.debug(f'Bet placed with too many numbers. Max numbers = 20.', TAG)
             revert(f' Invalid bet. Too many numbers submitted. Returning funds.')
 
         numset = set(WHEEL_ORDER)
         numset.remove('0')
         for num in nums:
             if num not in numset:
-                Logger.debug(f'Invalid number submitted.', TAG)
                 revert(f' Please check your bet. Numbers must be between 0 and 20, submitted as a comma separated '
                        f'string. Returning funds.')
 
@@ -829,7 +811,6 @@ class Roulette(IconScoreBase):
         else:
             bet_limit = self._bet_limits[n]
         if amount < BET_MIN or amount > bet_limit:
-            Logger.debug(f'Betting amount {amount} out of range.', TAG)
             revert(f'Betting amount {amount} out of range ({BET_MIN} -> {bet_limit} loop).')
 
         if n == 1:
@@ -839,20 +820,16 @@ class Roulette(IconScoreBase):
         else:
             payout = MULTIPLIERS[bet_type] * amount
         if self.icx.get_balance(self.address) < payout:
-            Logger.debug(f'Not enough in treasury to make the play.', TAG)
             revert('Not enough in treasury to make the play.')
 
         spin = self.get_random(user_seed)
         winningNumber = WHEEL_ORDER[int(spin * 21)]
-        Logger.debug(f'winningNumber was {winningNumber}.', TAG)
         win = winningNumber in nums
         payout = payout * win
         self.BetResult(str(spin), winningNumber, payout)
 
         if win == 1:
             self._wager_payout(self.address, payout)
-        else:
-            Logger.debug(f'Player lost. ICX retained in treasury.', TAG)
 
     @payable
     @external
