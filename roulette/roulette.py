@@ -590,9 +590,9 @@ class Roulette(IconScoreBase):
                 self.icx.transfer(self.tx.origin, _payout)
                 self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
                 Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                revert('Network problem. Winnings not sent. Returning funds. Exception: {e}')
+            except Exception:
+                Logger.debug(f'Send failed.', TAG)
+                revert('Network problem. Winnings not sent. Returning funds.')
         self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
@@ -775,19 +775,17 @@ class Roulette(IconScoreBase):
                 Logger.debug(f'Sent div score ({self._dividends_score.get()}) {excess}.', TAG)
                 self._total_distributed.set(self._total_distributed.get() + excess)
                 self._excess_to_distribute.set(0)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                revert('Network problem. Excess not sent. '
-                       f'Exception: {e}')
+            except Exception:
+                Logger.debug(f'Send failed.', TAG)
+                revert('Network problem. Excess not sent.')
 
         if daofund > 0:
             try:
                 self._daofund_to_distirbute.set(0)
                 self.icx.transfer(self._daofund_score.get(), daofund)
-                self.FundTransfer(self._daofund_score.get(), daofund, "Excess transerred to daofund")
-            except BaseException as e:
-                revert('Network problem. DAOfund not sent. '
-                       f'Exception: {e}')
+                self.FundTransfer(self._daofund_score.get(), daofund, "Excess transferred to daofund")
+            except Exception:
+                revert('Network problem. DAOfund not sent.')
 
     def __bet(self, numbers: str, user_seed: str) -> None:
         """
