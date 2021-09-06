@@ -170,8 +170,6 @@ class Roulette(IconScoreBase):
         self._rewards_score = VarDB(self._REWARDS_SCORE, db, value_type=Address)
         self._dividends_score = VarDB(self._DIVIDENDS_SCORE, db, value_type=Address)
 
-        self._vote = DictDB(self._VOTE, db, value_type=str)
-        self._voted = ArrayDB(self._VOTED, db, value_type=Address)
         self._yes_votes = VarDB(self._YES_VOTES, db, value_type=int)
         self._no_votes = VarDB(self._NO_VOTES, db, value_type=int)
         self._open_treasury = VarDB(self._OPEN_TREASURY, db, value_type=bool)
@@ -663,63 +661,6 @@ class Roulette(IconScoreBase):
         if self.msg.sender != self.owner:
             revert(f'Only the owner can call the untether method.')
         pass
-
-    @external
-    def vote(self, option: str) -> None:
-        """
-        Vote takes the votes from TAP holders to dissolve the treasury.
-        :param option: Option to select for dissolving the treasury ("yes" | "no")
-        :type option: str
-        :return:
-        """
-        if option not in ['yes', 'no']:
-            revert(f'Option must be one of either "yes" or "no".')
-        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
-        address = self.tx.origin
-        if address not in self._voted and token_score.balanceOf(address) == 0:
-            revert(f'You must either own or be a previous owner of TAP tokens in order to cast a vote.')
-        self._vote[str(address)] = option
-        if address not in self._voted:
-            self._voted.put(address)
-            message = f"Recorded vote of {str(address)}"
-            self.Vote(self.msg.sender, option, message)
-        else:
-            message = f"{str(address)} updated vote to {option}"
-            self.Vote(address, option, message)
-        if not self.vote_result():
-            vote_msg = "Overall Vote remains a 'No'."
-            self.Vote(address, option, vote_msg)
-        else:
-            # In case the votes is passed, treasury is dissolved by sending all the balance to distribution contract.
-            # Distribution contract will then distribute 80% to tap holders and 20% to founders.
-            self._open_treasury.set(True)
-            self._excess_to_distribute.set(self.icx.get_balance(self.address))
-            self.__check_for_dividends()
-            vote_msg = "Vote passed! Treasury balance forwarded to distribution contract."
-            self.Vote(address, option, vote_msg)
-            self._treasury_min.set(0)
-
-    def vote_result(self) -> bool:
-        """
-        Returns the vote result of vote on dissolving the treasury
-        :return: True if majority of votes are yes
-        :rtype: bool
-        """
-        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
-        yes = 0
-        no = 0
-        for address in self._voted:
-            vote = self._vote[str(address)]
-            if vote == 'yes':
-                yes += token_score.balanceOf(address)
-            else:
-                no += token_score.balanceOf(address)
-        self._yes_votes.set(yes)
-        self._no_votes.set(no)
-        if self._yes_votes.get() > (token_score.totalSupply() - token_score.balanceOf(self._rewards_score.get())) // 2:
-            return True
-        else:
-            return False
 
     @external(readonly=True)
     def get_batch_size(self, recip_count: int) -> int:
