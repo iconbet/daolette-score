@@ -147,10 +147,6 @@ class Roulette(IconScoreBase):
     def DayAdvance(self, day: int, skipped: int, block_time: int, note: str):
         pass
 
-    @eventlog(indexed=2)
-    def Vote(self, _from: Address, _vote: str, note: str):
-        pass
-
     def __init__(self, db: IconScoreDatabase) -> None:
         super().__init__(db)
         Logger.debug(f'In __init__.', TAG)
@@ -449,16 +445,6 @@ class Roulette(IconScoreBase):
         :rtype: int
         """
         return self._bet_limits[n]
-
-    @external(readonly=True)
-    def get_vote_results(self) -> str:
-        """
-        Returns the vote results of dissolving the treasury.
-        :return: Vote result for treasury to be dissolved e.g. [0,0]
-        :rtype: str
-        """
-        results = [self._yes_votes.get(), self._no_votes.get()]
-        return str(results)
 
     @external(readonly=True)
     def get_score_owner(self) -> Address:
