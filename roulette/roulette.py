@@ -147,10 +147,6 @@ class Roulette(IconScoreBase):
     def DayAdvance(self, day: int, skipped: int, block_time: int, note: str):
         pass
 
-    @eventlog(indexed=2)
-    def Vote(self, _from: Address, _vote: str, note: str):
-        pass
-
     def __init__(self, db: IconScoreDatabase) -> None:
         super().__init__(db)
         Logger.debug(f'In __init__.', TAG)
@@ -170,8 +166,6 @@ class Roulette(IconScoreBase):
         self._rewards_score = VarDB(self._REWARDS_SCORE, db, value_type=Address)
         self._dividends_score = VarDB(self._DIVIDENDS_SCORE, db, value_type=Address)
 
-        self._vote = DictDB(self._VOTE, db, value_type=str)
-        self._voted = ArrayDB(self._VOTED, db, value_type=Address)
         self._yes_votes = VarDB(self._YES_VOTES, db, value_type=int)
         self._no_votes = VarDB(self._NO_VOTES, db, value_type=int)
         self._open_treasury = VarDB(self._OPEN_TREASURY, db, value_type=bool)
@@ -453,16 +447,6 @@ class Roulette(IconScoreBase):
         return self._bet_limits[n]
 
     @external(readonly=True)
-    def get_vote_results(self) -> str:
-        """
-        Returns the vote results of dissolving the treasury.
-        :return: Vote result for treasury to be dissolved e.g. [0,0]
-        :rtype: str
-        """
-        results = [self._yes_votes.get(), self._no_votes.get()]
-        return str(results)
-
-    @external(readonly=True)
     def get_score_owner(self) -> Address:
         """
         A function to return the owner of this score.
@@ -538,7 +522,6 @@ class Roulette(IconScoreBase):
             self.__check_for_dividends()
         self._daily_bet_count.set(self._daily_bet_count.get() + 1)
         auth_score.accumulate_daily_wagers(_game_address, _amount)
-        Logger.debug(f'Sending wager data to rewards score.', TAG)
         rewards_score = self.create_interface_score(self._rewards_score.get(), RewardsInterface)
         rewards_score.accumulate_wagers(str(self.tx.origin), _amount, (self._day.get() - self._skipped_days.get()) % 2)
         self._treasury_balance.set(self.icx.get_balance(self.address))
@@ -588,13 +571,10 @@ class Roulette(IconScoreBase):
 
         if auth_score.accumulate_daily_payouts(_game_address, _payout):
             try:
-                Logger.debug(f'Trying to send to ({self.tx.origin}): {_payout}.', TAG)
                 self.icx.transfer(self.tx.origin, _payout)
                 self.FundTransfer(self.tx.origin, _payout, f'Player Winnings from {self.msg.sender}.')
-                Logger.debug(f'Sent winner ({self.tx.origin}) {_payout}.', TAG)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                revert('Network problem. Winnings not sent. Returning funds. Exception: {e}')
+            except Exception:
+                revert('Network problem. Winnings not sent. Returning funds.')
         self._treasury_balance.set(self.icx.get_balance(self.address))
 
     @external
@@ -664,63 +644,6 @@ class Roulette(IconScoreBase):
             revert(f'Only the owner can call the untether method.')
         pass
 
-    @external
-    def vote(self, option: str) -> None:
-        """
-        Vote takes the votes from TAP holders to dissolve the treasury.
-        :param option: Option to select for dissolving the treasury ("yes" | "no")
-        :type option: str
-        :return:
-        """
-        if option not in ['yes', 'no']:
-            revert(f'Option must be one of either "yes" or "no".')
-        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
-        address = self.tx.origin
-        if address not in self._voted and token_score.balanceOf(address) == 0:
-            revert(f'You must either own or be a previous owner of TAP tokens in order to cast a vote.')
-        self._vote[str(address)] = option
-        if address not in self._voted:
-            self._voted.put(address)
-            message = f"Recorded vote of {str(address)}"
-            self.Vote(self.msg.sender, option, message)
-        else:
-            message = f"{str(address)} updated vote to {option}"
-            self.Vote(address, option, message)
-        if not self.vote_result():
-            vote_msg = "Overall Vote remains a 'No'."
-            self.Vote(address, option, vote_msg)
-        else:
-            # In case the votes is passed, treasury is dissolved by sending all the balance to distribution contract.
-            # Distribution contract will then distribute 80% to tap holders and 20% to founders.
-            self._open_treasury.set(True)
-            self._excess_to_distribute.set(self.icx.get_balance(self.address))
-            self.__check_for_dividends()
-            vote_msg = "Vote passed! Treasury balance forwarded to distribution contract."
-            self.Vote(address, option, vote_msg)
-            self._treasury_min.set(0)
-
-    def vote_result(self) -> bool:
-        """
-        Returns the vote result of vote on dissolving the treasury
-        :return: True if majority of votes are yes
-        :rtype: bool
-        """
-        token_score = self.create_interface_score(self._token_score.get(), TokenInterface)
-        yes = 0
-        no = 0
-        for address in self._voted:
-            vote = self._vote[str(address)]
-            if vote == 'yes':
-                yes += token_score.balanceOf(address)
-            else:
-                no += token_score.balanceOf(address)
-        self._yes_votes.set(yes)
-        self._no_votes.set(no)
-        if self._yes_votes.get() > (token_score.totalSupply() - token_score.balanceOf(self._rewards_score.get())) // 2:
-            return True
-        else:
-            return False
-
     @external(readonly=True)
     def get_batch_size(self, recip_count: int) -> int:
         """
@@ -731,7 +654,6 @@ class Roulette(IconScoreBase):
         :return: Batch size
         :rtype: int
         """
-        Logger.debug(f'In get_batch_size.', TAG)
         yesterdays_count = self._yesterdays_bet_count.get()
         if yesterdays_count < 1:
             yesterdays_count = 1
@@ -740,7 +662,6 @@ class Roulette(IconScoreBase):
             size = TX_MIN_BATCH_SIZE
         if size > TX_MAX_BATCH_SIZE:
             size = TX_MAX_BATCH_SIZE
-        Logger.debug(f'Returning batch size of {size}', TAG)
         return size
 
     def get_random(self, user_seed: str = '') -> float:
@@ -752,10 +673,8 @@ class Roulette(IconScoreBase):
         :return: number from [x / 100000.0 for x in range(100000)] i.e. [0,0.99999]
         :rtype: float
         """
-        Logger.debug(f'Entered get_random.', TAG)
         seed = (str(bytes.hex(self.tx.hash)) + str(self.now()) + user_seed)
         spin = (int.from_bytes(sha3_256(seed.encode()), "big") % 100000) / 100000.0
-        Logger.debug(f'Result of the spin was {spin}.', TAG)
         return spin
 
     def __day_advanced(self) -> bool:
@@ -766,7 +685,6 @@ class Roulette(IconScoreBase):
         :return: True if day has advanced and distribution has been completed for previous day
         :rtype: bool
         """
-        Logger.debug(f'In __day_advanced method.', TAG)
         currentDay = self.now() // U_SECONDS_DAY
         advance = currentDay - self._day.get()
         if advance < 1:
@@ -825,28 +743,22 @@ class Roulette(IconScoreBase):
         excess = self._excess_to_distribute.get()
         daofund = self._daofund_to_distirbute.get()
 
-        Logger.debug(f'Found treasury excess of {excess}.', TAG)
         if excess > 0:
             try:
-                Logger.debug(f'Trying to send to ({self._dividends_score.get()}): {excess}.', TAG)
                 self.icx.transfer(self._dividends_score.get(), excess)
                 self.FundTransfer(self._dividends_score.get(), excess, "Excess made by games")
-                Logger.debug(f'Sent div score ({self._dividends_score.get()}) {excess}.', TAG)
                 self._total_distributed.set(self._total_distributed.get() + excess)
                 self._excess_to_distribute.set(0)
-            except BaseException as e:
-                Logger.debug(f'Send failed. Exception: {e}', TAG)
-                revert('Network problem. Excess not sent. '
-                       f'Exception: {e}')
+            except Exception:
+                revert('Network problem. Excess not sent.')
 
         if daofund > 0:
             try:
                 self._daofund_to_distirbute.set(0)
                 self.icx.transfer(self._daofund_score.get(), daofund)
-                self.FundTransfer(self._daofund_score.get(), daofund, "Excess transerred to daofund")
-            except BaseException as e:
-                revert('Network problem. DAOfund not sent. '
-                       f'Exception: {e}')
+                self.FundTransfer(self._daofund_score.get(), daofund, "Excess transferred to daofund")
+            except Exception:
+                revert('Network problem. DAOfund not sent.')
 
     def __bet(self, numbers: str, user_seed: str) -> None:
         """
@@ -859,27 +771,22 @@ class Roulette(IconScoreBase):
         """
         self.BetSource(self.tx.origin, self.tx.timestamp)
         if not self._game_on.get():
-            Logger.debug(f'Game not active yet.', TAG)
             revert(f'Game not active yet.')
         amount = self.msg.value
-        Logger.debug(f'Betting {amount} loop on {numbers}.', TAG)
         self.BetPlaced(amount, numbers)
         self._take_wager(self.address, amount)
 
         nums = set(numbers.split(','))
         n = len(nums)
         if n == 0:
-            Logger.debug(f'Bet placed without numbers.', TAG)
             revert(f' Invalid bet. No numbers submitted. Zero win chance. Returning funds.')
         elif n > 20:
-            Logger.debug(f'Bet placed with too many numbers. Max numbers = 20.', TAG)
             revert(f' Invalid bet. Too many numbers submitted. Returning funds.')
 
         numset = set(WHEEL_ORDER)
         numset.remove('0')
         for num in nums:
             if num not in numset:
-                Logger.debug(f'Invalid number submitted.', TAG)
                 revert(f' Please check your bet. Numbers must be between 0 and 20, submitted as a comma separated '
                        f'string. Returning funds.')
 
@@ -890,7 +797,6 @@ class Roulette(IconScoreBase):
         else:
             bet_limit = self._bet_limits[n]
         if amount < BET_MIN or amount > bet_limit:
-            Logger.debug(f'Betting amount {amount} out of range.', TAG)
             revert(f'Betting amount {amount} out of range ({BET_MIN} -> {bet_limit} loop).')
 
         if n == 1:
@@ -900,20 +806,16 @@ class Roulette(IconScoreBase):
         else:
             payout = MULTIPLIERS[bet_type] * amount
         if self.icx.get_balance(self.address) < payout:
-            Logger.debug(f'Not enough in treasury to make the play.', TAG)
             revert('Not enough in treasury to make the play.')
 
         spin = self.get_random(user_seed)
         winningNumber = WHEEL_ORDER[int(spin * 21)]
-        Logger.debug(f'winningNumber was {winningNumber}.', TAG)
         win = winningNumber in nums
         payout = payout * win
         self.BetResult(str(spin), winningNumber, payout)
 
         if win == 1:
             self._wager_payout(self.address, payout)
-        else:
-            Logger.debug(f'Player lost. ICX retained in treasury.', TAG)
 
     @payable
     @external
